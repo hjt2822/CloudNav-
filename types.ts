@@ -8,6 +8,7 @@ export interface LinkItem {
   categoryId: string;
   createdAt: number;
   pinned?: boolean; // New field for pinning
+  tags?: string[]; // Tags for organizing links
 }
 
 export interface Category {
@@ -15,7 +16,7 @@ export interface Category {
   name: string;
   icon: string; // Lucide icon name or emoji
   password?: string; // Optional password for category protection
-  parentId?: string; // Parent category id for nested directories
+  parentId?: string; // Parent category id, supports unlimited nesting
 }
 
 export const getRootCategories = (categories: Category[]): Category[] =>
@@ -24,27 +25,84 @@ export const getRootCategories = (categories: Category[]): Category[] =>
 export const getChildCategories = (categories: Category[], parentId: string): Category[] =>
   categories.filter(c => c.parentId === parentId);
 
-export const getCategoryLabel = (categories: Category[], cat: Category): string => {
-  if (!cat.parentId) return cat.name;
-  const parent = categories.find(c => c.id === cat.parentId);
-  return parent ? `${parent.name} / ${cat.name}` : cat.name;
+// Collect all descendant ids of a category (guarded against cycles)
+export const getDescendantIds = (categories: Category[], categoryId: string): Set<string> => {
+  const result = new Set<string>();
+  const walk = (pid: string) => {
+    categories.filter(c => c.parentId === pid).forEach(c => {
+      if (result.has(c.id)) return;
+      result.add(c.id);
+      walk(c.id);
+    });
+  };
+  walk(categoryId);
+  return result;
 };
 
+export const isDescendant = (categories: Category[], ancestorId: string, maybeChildId: string): boolean =>
+  getDescendantIds(categories, ancestorId).has(maybeChildId);
+
+// Depth of a category in the tree (root = 0)
+export const getCategoryDepth = (categories: Category[], cat: Category): number => {
+  let depth = 0;
+  let current: Category | undefined = cat;
+  const seen = new Set<string>();
+  while (current?.parentId && !seen.has(current.parentId)) {
+    seen.add(current.parentId);
+    current = categories.find(c => c.id === current!.parentId);
+    depth++;
+  }
+  return depth;
+};
+
+// Full path label, e.g. "AI工具包 / AI助手"
+export const getCategoryPath = (categories: Category[], cat: Category): string => {
+  const names: string[] = [];
+  let current: Category | undefined = cat;
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    names.unshift(current.name);
+    current = current.parentId ? categories.find(c => c.id === current.parentId) : undefined;
+  }
+  return names.join(' / ');
+};
+
+// Backwards-compatible alias for two-level usage
+export const getCategoryLabel = getCategoryPath;
+
+// Flatten tree in display order (works for unlimited depth)
 export const flattenCategoryTree = (categories: Category[]): Category[] => {
   const result: Category[] = [];
   const placed = new Set<string>();
-  categories.filter(c => !c.parentId).forEach(root => {
-    result.push(root);
-    placed.add(root.id);
-    categories.filter(c => c.parentId === root.id).forEach(child => {
-      result.push(child);
-      placed.add(child.id);
-    });
-  });
+  const walk = (parentId?: string) => {
+    categories
+      .filter(c => (c.parentId || undefined) === parentId)
+      .forEach(cat => {
+        if (placed.has(cat.id)) return;
+        placed.add(cat.id);
+        result.push(cat);
+        walk(cat.id);
+      });
+  };
+  walk(undefined);
   categories.forEach(c => {
     if (!placed.has(c.id)) result.push(c);
   });
   return result;
+};
+
+// All links under a category including all of its descendants
+export const getCategoryLinkCount = (
+  categories: Category[],
+  categoryId: string,
+  countOf: (catId: string) => number
+): number => {
+  let total = countOf(categoryId);
+  getDescendantIds(categories, categoryId).forEach(id => {
+    total += countOf(id);
+  });
+  return total;
 };
 
 export interface SiteSettings {
@@ -82,6 +140,8 @@ export const DEFAULT_CATEGORIES: Category[] = [
   { id: 'media', name: '媒体资讯', icon: 'Newspaper' },
   { id: 'ai', name: 'AI工具包', icon: 'Bot' },
   { id: 'ai-assistant', name: 'AI助手', icon: 'MessageSquare', parentId: 'ai' },
+  { id: 'ai-assistant-chat', name: '聊天助手', icon: 'MessageCircle', parentId: 'ai-assistant' },
+  { id: 'ai-assistant-search', name: '搜索助手', icon: 'SearchCheck', parentId: 'ai-assistant' },
   { id: 'ai-productivity', name: '生产力工具', icon: 'Briefcase', parentId: 'ai' },
   { id: 'ai-mcp', name: 'MCP Server', icon: 'Server', parentId: 'ai' },
   { id: 'ai-media', name: '多媒体', icon: 'Clapperboard', parentId: 'ai' },
@@ -90,6 +150,8 @@ export const DEFAULT_CATEGORIES: Category[] = [
   { id: 'dev', name: '开发者工具包', icon: 'Code' },
   { id: 'dev-icon', name: 'ICON', icon: 'Smile', parentId: 'dev' },
   { id: 'dev-ui', name: 'UI框架', icon: 'Layout', parentId: 'dev' },
+  { id: 'dev-ui-react', name: 'React 生态', icon: 'Atom', parentId: 'dev-ui' },
+  { id: 'dev-ui-vue', name: 'Vue 生态', icon: 'Leaf', parentId: 'dev-ui' },
   { id: 'dev-hosting', name: '托管平台', icon: 'Cloud', parentId: 'dev' },
   { id: 'dev-draw', name: '画图工具', icon: 'PenTool', parentId: 'dev' },
   { id: 'dev-aicoding', name: 'AI编程工具', icon: 'Terminal', parentId: 'dev' },
@@ -127,11 +189,12 @@ export const DEFAULT_CATEGORIES: Category[] = [
 ];
 
 export const INITIAL_LINKS: LinkItem[] = [
-  { id: '1', title: 'GitHub', url: 'https://github.com', categoryId: 'dev', createdAt: Date.now(), description: '代码托管平台', pinned: true },
-  { id: '2', title: 'React', url: 'https://react.dev', categoryId: 'dev-ui', createdAt: Date.now(), description: '构建Web用户界面的库' },
-  { id: '3', title: 'Tailwind CSS', url: 'https://tailwindcss.com', categoryId: 'dev-ui', createdAt: Date.now(), description: '原子化CSS框架' },
-  { id: '4', title: 'ChatGPT', url: 'https://chat.openai.com', categoryId: 'ai-assistant', createdAt: Date.now(), description: 'OpenAI聊天机器人', pinned: true },
-  { id: '5', title: 'Gemini', url: 'https://gemini.google.com', categoryId: 'ai-assistant', createdAt: Date.now(), description: 'Google DeepMind AI' },
+  { id: '1', title: 'GitHub', url: 'https://github.com', categoryId: 'dev', createdAt: Date.now(), description: '代码托管平台', pinned: true, tags: ['开源', '代码'] },
+  { id: '2', title: 'React', url: 'https://react.dev', categoryId: 'dev-ui-react', createdAt: Date.now(), description: '构建Web用户界面的库', tags: ['前端', '框架'] },
+  { id: '3', title: 'Tailwind CSS', url: 'https://tailwindcss.com', categoryId: 'dev-ui', createdAt: Date.now(), description: '原子化CSS框架', tags: ['CSS', '框架'] },
+  { id: '4', title: 'ChatGPT', url: 'https://chat.openai.com', categoryId: 'ai-assistant-chat', createdAt: Date.now(), description: 'OpenAI聊天机器人', pinned: true, tags: ['AI', '对话'] },
+  { id: '5', title: 'Gemini', url: 'https://gemini.google.com', categoryId: 'ai-assistant-chat', createdAt: Date.now(), description: 'Google DeepMind AI', tags: ['AI', '对话'] },
+  { id: '6', title: 'Perplexity', url: 'https://www.perplexity.ai', categoryId: 'ai-assistant-search', createdAt: Date.now(), description: 'AI 搜索引擎', tags: ['AI', '搜索'] },
 ];
 
 export interface SearchEngine {

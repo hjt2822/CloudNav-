@@ -10,8 +10,10 @@ import {
 import { 
     LinkItem, Category, DEFAULT_CATEGORIES, INITIAL_LINKS, 
     WebDavConfig, AIConfig, SiteSettings, SearchEngine, DEFAULT_SEARCH_ENGINES,
-    getRootCategories, getChildCategories, flattenCategoryTree
+    getRootCategories, getChildCategories, getDescendantIds, isDescendant, getCategoryPath, flattenCategoryTree
 } from './types';
+import Favicon from './components/Favicon';
+import { getHostname } from './services/favicon';
 import Icon from './components/Icon';
 import LinkModal from './components/LinkModal';
 import AuthModal from './components/AuthModal';
@@ -412,11 +414,16 @@ function App() {
           return;
       }
       const cat = categories.find(c => c.id === catId);
-      if (cat?.parentId) {
-          setExpandedCategoryIds(prev => new Set(prev).add(cat.parentId!));
-      } else {
-          setExpandedCategoryIds(prev => new Set(prev).add(catId));
+      // Expand all ancestors so the target node is visible in the sidebar
+      const nextExpanded = new Set(expandedCategoryIds);
+      let cursor: Category | undefined = cat;
+      const guard = new Set<string>();
+      while (cursor && !guard.has(cursor.id)) {
+          guard.add(cursor.id);
+          if (cursor.parentId) nextExpanded.add(cursor.parentId);
+          cursor = cursor.parentId ? categories.find(c => c.id === cursor!.parentId) : undefined;
       }
+      setExpandedCategoryIds(nextExpanded);
       const el = document.getElementById(`cat-${catId}`);
       if (el) {
           isAutoScrollingRef.current = true;
@@ -450,7 +457,7 @@ function App() {
       const cat = categories.find(c => c.id === catId);
       const newCats = categories
         .filter(c => c.id !== catId)
-        .map(c => c.parentId === catId ? { ...c, parentId: undefined } : c);
+        .map(c => c.parentId === catId ? { ...c, parentId: cat?.parentId } : c);
       const targetId = cat?.parentId || 'common';
       const fallbackId = newCats.some(c => c.id === targetId) ? targetId : (newCats[0]?.id || 'common');
       const newLinks = links.map(l => l.categoryId === catId ? { ...l, categoryId: fallbackId } : l);
@@ -507,11 +514,84 @@ function App() {
       result = result.filter(l => 
         l.title.toLowerCase().includes(q) || 
         l.url.toLowerCase().includes(q) ||
-        (l.description && l.description.toLowerCase().includes(q))
+        (l.description && l.description.toLowerCase().includes(q)) ||
+        (l.tags && l.tags.some(t => t.toLowerCase().includes(q)))
       );
     }
     return result;
   }, [links, searchQuery, searchMode]);
+
+  // --- Link Drag & Drop (reorder within category / move across categories) ---
+  const [draggedLinkId, setDraggedLinkId] = useState<string | null>(null);
+  const [dropTargetLinkId, setDropTargetLinkId] = useState<string | null>(null);
+  const [dropPos, setDropPos] = useState<'before' | 'after'>('after');
+  const [dropTargetCatId, setDropTargetCatId] = useState<string | null>(null);
+
+  const clearLinkDrag = () => {
+      setDraggedLinkId(null);
+      setDropTargetLinkId(null);
+      setDropTargetCatId(null);
+      setDropPos('after');
+  };
+
+  const handleLinkDragStart = (e: React.DragEvent, link: LinkItem) => {
+      setDraggedLinkId(link.id);
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', link.id);
+  };
+
+  const handleLinkDragOverCard = (e: React.DragEvent, link: LinkItem) => {
+      if (!draggedLinkId || draggedLinkId === link.id) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = e.currentTarget.getBoundingClientRect();
+      setDropPos(e.clientX < rect.left + rect.width / 2 ? 'before' : 'after');
+      setDropTargetLinkId(link.id);
+      setDropTargetCatId(null);
+  };
+
+  const handleLinkDropOnCard = (e: React.DragEvent, target: LinkItem) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const srcId = draggedLinkId;
+      if (!srcId || srcId === target.id) { clearLinkDrag(); return; }
+      const src = links.find(l => l.id === srcId);
+      if (!src) { clearLinkDrag(); return; }
+      const newLinks = links.filter(l => l.id !== srcId);
+      const tIdx = newLinks.findIndex(l => l.id === target.id);
+      const insertIdx = dropPos === 'after' ? tIdx + 1 : tIdx;
+      newLinks.splice(insertIdx, 0, { ...src, categoryId: target.categoryId });
+      updateData(newLinks, categories);
+      clearLinkDrag();
+  };
+
+  const handleLinkDragOverSection = (e: React.DragEvent, catId: string) => {
+      if (!draggedLinkId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      setDropTargetCatId(catId);
+      setDropTargetLinkId(null);
+  };
+
+  const handleLinkDropOnSection = (e: React.DragEvent, catId: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const srcId = draggedLinkId;
+      if (!srcId) { clearLinkDrag(); return; }
+      const src = links.find(l => l.id === srcId);
+      if (!src) { clearLinkDrag(); return; }
+      const newLinks = links.filter(l => l.id !== srcId);
+      const moved = { ...src, categoryId: catId };
+      let insertAt = -1;
+      for (let i = newLinks.length - 1; i >= 0; i--) {
+          if (newLinks[i].categoryId === catId) { insertAt = i + 1; break; }
+      }
+      if (insertAt >= 0) newLinks.splice(insertAt, 0, moved);
+      else newLinks.push(moved);
+      updateData(newLinks, categories);
+      clearLinkDrag();
+  };
 
   const activeExternalEngine = useMemo(() => {
       return externalEngines.find(e => e.id === activeEngineId) || externalEngines[0];
@@ -520,26 +600,23 @@ function App() {
   // --- Render Components ---
 
   const renderLinkCard = (link: LinkItem) => {
-      const iconDisplay = link.icon ? (
-         <img 
-            src={link.icon} 
-            alt="" 
-            className="w-5 h-5 object-contain" 
-            onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.parentElement!.innerText = link.title.charAt(0);
-            }}
-         />
-      ) : link.title.charAt(0);
-      
       const isSimple = siteSettings.cardStyle === 'simple';
+      const isDragging = draggedLinkId === link.id;
+      const isDropTarget = dropTargetLinkId === link.id;
 
+      // NavSphere 风格：图标居左，标题 + 描述居右；无描述时显示域名
       return (
         <a
             key={link.id}
             href={link.url}
             target="_blank"
             rel="noopener noreferrer"
+            draggable
+            onDragStart={(e) => handleLinkDragStart(e, link)}
+            onDragOver={(e) => handleLinkDragOverCard(e, link)}
+            onDragLeave={() => { if (dropTargetLinkId === link.id) setDropTargetLinkId(null); }}
+            onDrop={(e) => handleLinkDropOnCard(e, link)}
+            onDragEnd={clearLinkDrag}
             onContextMenu={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -551,23 +628,196 @@ function App() {
                 setContextMenu({ x, y, link });
                 return false;
             }}
-            className={`group relative flex flex-col ${isSimple ? 'p-2' : 'p-3'} bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700/50 shadow-sm hover:shadow-lg hover:border-blue-200 dark:hover:border-slate-600 hover:-translate-y-0.5 transition-all duration-200 hover:bg-blue-50 dark:hover:bg-slate-750`}
+            className={`group relative flex ${isSimple ? 'flex-row items-center p-2 gap-2' : 'items-center gap-3 p-3'} bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700/50 shadow-sm hover:shadow-lg hover:border-slate-200 dark:hover:border-slate-600 hover:-translate-y-1 transition-all duration-300 ease-in-out hover:bg-blue-50 dark:hover:bg-slate-750 ${
+              isDragging ? 'opacity-40' : ''
+            } ${isDropTarget ? 'ring-2 ring-blue-400 border-transparent' : ''}`}
             title={link.description || link.url}
         >
-            <div className={`flex items-center gap-3 ${isSimple ? '' : 'mb-1.5'} pr-6`}>
-                <div className={`${isSimple ? 'w-6 h-6 text-xs' : 'w-8 h-8 text-sm'} rounded-lg bg-slate-50 dark:bg-slate-700 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold uppercase shrink-0 overflow-hidden`}>
-                    {iconDisplay}
-                </div>
-                <h3 className="font-medium text-sm text-slate-800 dark:text-slate-200 truncate flex-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+            <Favicon
+                url={link.url}
+                icon={link.icon}
+                title={link.title}
+                className={isSimple ? 'w-6 h-6' : 'w-10 h-10'}
+                letterClassName={isSimple ? 'text-xs' : 'text-sm'}
+            />
+            <div className="flex-1 min-w-0">
+                <h3 className="font-medium text-sm text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
                     {link.title}
                 </h3>
+                {!isSimple && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
+                        {link.description || getHostname(link.url)}
+                    </p>
+                )}
+                {!isSimple && link.tags && link.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                        {link.tags.slice(0, 3).map(tag => (
+                            <span
+                                key={tag}
+                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSearchMode('local'); setSearchQuery(tag); }}
+                                className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer transition-colors"
+                                title={`筛选标签: ${tag}`}
+                            >
+                                #{tag}
+                            </span>
+                        ))}
+                    </div>
+                )}
             </div>
-            {!isSimple && (
-                <div className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1 h-4 w-full overflow-hidden">
-                    {link.description || <span className="opacity-0">.</span>}
-                </div>
-            )}
         </a>
+      );
+  };
+
+  // Auto-expand ancestors of the active category
+  useEffect(() => {
+      if (!activeCategory) return;
+      const nextExpanded = new Set(expandedCategoryIds);
+      let cursor = categories.find(c => c.id === activeCategory);
+      const guard = new Set<string>();
+      while (cursor && cursor.parentId && !guard.has(cursor.id)) {
+          guard.add(cursor.id);
+          nextExpanded.add(cursor.parentId);
+          cursor = categories.find(c => c.id === cursor!.parentId);
+      }
+      if (nextExpanded.size !== expandedCategoryIds.size || [...nextExpanded].some(id => !expandedCategoryIds.has(id))) {
+          setExpandedCategoryIds(nextExpanded);
+      }
+  }, [activeCategory, categories]);
+
+  const renderSidebarCategory = (cat: Category, depth: number): React.ReactNode => {
+      const children = getChildCategories(categories, cat.id);
+      const hasChildren = children.length > 0;
+      const isExpanded = expandedCategoryIds.has(cat.id);
+      const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
+      const isEmoji = cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon);
+      const isActive = activeCategory === cat.id;
+
+      return (
+        <div key={cat.id} className="space-y-0.5">
+          <button
+            onClick={() => scrollToCategory(cat.id)}
+            className={`w-full flex items-center gap-2 rounded-xl transition-all group ${
+              depth === 0 ? 'px-3 py-2.5' : 'px-3 py-2'
+            } ${
+              isActive 
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium' 
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+            }`}
+          >
+            {hasChildren ? (
+              <span
+                onClick={(e) => toggleExpandCategory(cat.id, e)}
+                className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-400 shrink-0"
+              >
+                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </span>
+            ) : (
+              <span className="w-[18px] shrink-0" />
+            )}
+            <div className={`${depth === 0 ? 'p-1.5' : 'p-1'} rounded-lg transition-colors flex items-center justify-center shrink-0 ${isActive ? 'bg-blue-100 dark:bg-blue-800' : 'bg-slate-100 dark:bg-slate-800'}`}>
+              {isLocked ? <Lock size={depth === 0 ? 16 : 14} className="text-amber-500" /> : (isEmoji ? <span className={depth === 0 ? 'text-base leading-none' : 'text-sm leading-none'}>{cat.icon}</span> : <Icon name={cat.icon} size={depth === 0 ? 16 : 14} />)}
+            </div>
+            <span className="truncate flex-1 text-left text-sm">{cat.name}</span>
+            {isActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></div>}
+          </button>
+          {hasChildren && isExpanded && (
+            <div className="ml-4 pl-2 border-l border-slate-200 dark:border-slate-700 space-y-0.5">
+              {children.map(child => renderSidebarCategory(child, depth + 1))}
+            </div>
+          )}
+        </div>
+      );
+  };
+
+  const matchCountFor = (catId: string): number => {
+      let count = searchResults.filter(l => l.categoryId === catId).length;
+      for (const cid of getDescendantIds(categories, catId)) {
+          count += searchResults.filter(l => l.categoryId === cid).length;
+      }
+      return count;
+  };
+
+  const renderLockedBox = (lockedCat: Category) => (
+      <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 p-8 flex flex-col items-center justify-center text-center">
+          <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4 text-amber-600 dark:text-amber-400">
+              <Lock size={24} />
+          </div>
+          <h3 className="text-slate-800 dark:text-slate-200 font-medium mb-1">私密目录</h3>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">该分类已加密，需要验证密码才能查看内容</p>
+          <button 
+              onClick={() => setCatAuthModalData(lockedCat)}
+              className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+              输入密码解锁
+          </button>
+      </div>
+  );
+
+  const renderLinkGrid = (sectionLinks: LinkItem[]) => (
+      sectionLinks.length === 0 ? null : (
+          <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
+              {sectionLinks.map(link => renderLinkCard(link))}
+          </div>
+      )
+  );
+
+  const renderCategorySection = (cat: Category, depth: number): React.ReactNode => {
+      const children = getChildCategories(categories, cat.id);
+      const catLinks = searchResults.filter(l => l.categoryId === cat.id);
+      const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
+      const searching = searchQuery.trim() !== '' && searchMode === 'local';
+      const totalMatches = matchCountFor(cat.id);
+
+      if (searching && totalMatches === 0 && !isLocked) return null;
+      if (!searching && depth > 0 && catLinks.length === 0 && children.length === 0 && !isLocked) return null;
+
+      const isEmoji = cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon);
+      const isDropTargetCat = dropTargetCatId === cat.id;
+      const showEmptyHint = catLinks.length === 0 && children.length === 0 && !isLocked;
+
+      return (
+          <section 
+            key={cat.id} 
+            id={`cat-${cat.id}`} 
+            className="scroll-mt-24 space-y-6"
+            onDragOver={(e) => handleLinkDragOverSection(e, cat.id)}
+            onDrop={(e) => handleLinkDropOnSection(e, cat.id)}
+          >
+              <div className={isDropTargetCat ? 'rounded-xl ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-900' : ''}>
+                  <div 
+                    className={`flex items-center gap-2 ${depth === 0 ? 'mb-4 pb-2 border-b border-slate-100 dark:border-slate-800' : 'mb-3'}`}
+                  >
+                      <div className="text-slate-400 cursor-pointer" onClick={() => setIsCatManagerOpen(true)}>
+                          {isEmoji ? <span className={depth === 0 ? 'text-lg' : 'text-base'}>{cat.icon}</span> : <Icon name={cat.icon} size={depth === 0 ? 20 : 16} />}
+                      </div>
+                      <h2 
+                        onClick={() => setIsCatManagerOpen(true)}
+                        className={`${depth === 0 ? 'text-lg font-bold text-slate-800 dark:text-slate-200' : 'text-base font-semibold text-slate-700 dark:text-slate-300'} cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors`}
+                        title="点击编辑分类"
+                      >
+                          {cat.name}
+                      </h2>
+                      {isLocked && <Lock size={16} className="text-amber-500" />}
+                  </div>
+                  
+                  {isLocked ? renderLockedBox(cat) : (
+                    <>
+                      {renderLinkGrid(catLinks)}
+                      {showEmptyHint && (
+                          <div className="text-center py-8 text-slate-400 text-sm italic border border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                              暂无链接，拖拽其他链接到此分类，或点击标题旁图标编辑分类
+                          </div>
+                      )}
+                    </>
+                  )}
+              </div>
+
+              {!isLocked && children.length > 0 && (
+                  <div className={depth === 0 ? 'space-y-6' : 'space-y-5 pl-3 border-l-2 border-slate-100 dark:border-slate-800'}>
+                      {children.map(child => renderCategorySection(child, depth + 1))}
+                  </div>
+              )}
+          </section>
       );
   };
 
@@ -729,69 +979,7 @@ function App() {
                </button>
             </div>
 
-            {getRootCategories(categories).map(cat => {
-                const children = getChildCategories(categories, cat.id);
-                const hasChildren = children.length > 0;
-                const isExpanded = expandedCategoryIds.has(cat.id) || children.some(c => c.id === activeCategory);
-                const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
-                const isEmoji = cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon);
-                const isActive = activeCategory === cat.id;
-                
-                return (
-                  <div key={cat.id} className="space-y-0.5">
-                    <button
-                      onClick={() => scrollToCategory(cat.id)}
-                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl transition-all group ${
-                        isActive 
-                          ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium' 
-                          : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                      }`}
-                    >
-                      {hasChildren ? (
-                        <span
-                          onClick={(e) => toggleExpandCategory(cat.id, e)}
-                          className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-400"
-                        >
-                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                        </span>
-                      ) : (
-                        <span className="w-[18px]" />
-                      )}
-                      <div className={`p-1.5 rounded-lg transition-colors flex items-center justify-center ${isActive ? 'bg-blue-100 dark:bg-blue-800' : 'bg-slate-100 dark:bg-slate-800'}`}>
-                        {isLocked ? <Lock size={16} className="text-amber-500" /> : (isEmoji ? <span className="text-base leading-none">{cat.icon}</span> : <Icon name={cat.icon} size={16} />)}
-                      </div>
-                      <span className="truncate flex-1 text-left text-sm">{cat.name}</span>
-                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
-                    </button>
-                    {hasChildren && isExpanded && (
-                      <div className="ml-5 pl-2 border-l border-slate-200 dark:border-slate-700 space-y-0.5">
-                        {children.map(child => {
-                          const childLocked = child.password && !unlockedCategoryIds.has(child.id);
-                          const childEmoji = child.icon && child.icon.length <= 4 && !/^[a-zA-Z]+$/.test(child.icon);
-                          const childActive = activeCategory === child.id;
-                          return (
-                            <button
-                              key={child.id}
-                              onClick={() => scrollToCategory(child.id)}
-                              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-                                childActive
-                                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium'
-                                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                              }`}
-                            >
-                              <div className={`p-1 rounded-md flex items-center justify-center ${childActive ? 'bg-blue-100 dark:bg-blue-800' : ''}`}>
-                                {childLocked ? <Lock size={14} className="text-amber-500" /> : (childEmoji ? <span className="text-sm leading-none">{child.icon}</span> : <Icon name={child.icon} size={14} />)}
-                              </div>
-                              <span className="truncate flex-1 text-left text-sm">{child.name}</span>
-                              {childActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-            })}
+            {getRootCategories(categories).map(cat => renderSidebarCategory(cat, 0))}
         </div>
 
         <div className="p-4 border-t border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 shrink-0">
@@ -967,90 +1155,13 @@ function App() {
                             置顶 / 常用
                         </h2>
                     </div>
-                    <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
+                    <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
                         {pinnedLinks.map(link => renderLinkCard(link))}
                     </div>
                 </section>
             )}
 
-            {getRootCategories(categories).map(cat => {
-                const children = getChildCategories(categories, cat.id);
-                const catLinks = searchResults.filter(l => l.categoryId === cat.id);
-                const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
-                const childHasResults = children.some(child => searchResults.some(l => l.categoryId === child.id));
-                
-                if (searchQuery && searchMode === 'local' && catLinks.length === 0 && !childHasResults) return null;
-
-                const renderLocked = (lockedCat: Category) => (
-                    <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 p-8 flex flex-col items-center justify-center text-center">
-                        <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4 text-amber-600 dark:text-amber-400">
-                            <Lock size={24} />
-                        </div>
-                        <h3 className="text-slate-800 dark:text-slate-200 font-medium mb-1">私密目录</h3>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">该分类已加密，需要验证密码才能查看内容</p>
-                        <button 
-                            onClick={() => setCatAuthModalData(lockedCat)}
-                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors"
-                        >
-                            输入密码解锁
-                        </button>
-                    </div>
-                );
-
-                const renderGrid = (sectionLinks: LinkItem[]) => (
-                    sectionLinks.length === 0 ? (
-                        children.length === 0 ? (
-                            <div className="text-center py-8 text-slate-400 text-sm italic">暂无链接</div>
-                        ) : null
-                    ) : (
-                        <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
-                            {sectionLinks.map(link => renderLinkCard(link))}
-                        </div>
-                    )
-                );
-
-                return (
-                    <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-24 space-y-6">
-                        <div>
-                            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-100 dark:border-slate-800">
-                                 <div className="text-slate-400">
-                                    {cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon) ? <span className="text-lg">{cat.icon}</span> : <Icon name={cat.icon} size={20} />}
-                                 </div>
-                                 <h2 className="text-lg font-bold text-slate-800 dark:text-slate-200">
-                                     {cat.name}
-                                 </h2>
-                                 {isLocked && <Lock size={16} className="text-amber-500" />}
-                            </div>
-                            
-                            {isLocked ? renderLocked(cat) : renderGrid(catLinks)}
-                        </div>
-
-                        {!isLocked && children.map(child => {
-                            const childLinks = searchResults.filter(l => l.categoryId === child.id);
-                            const childLocked = child.password && !unlockedCategoryIds.has(child.id);
-                            if (!childLocked && childLinks.length === 0) return null;
-                            return (
-                                <div key={child.id} id={`cat-${child.id}`} className="scroll-mt-24 pl-2">
-                                    <div className="flex items-center gap-2 mb-3">
-                                        <div className="text-slate-400">
-                                            {child.icon && child.icon.length <= 4 && !/^[a-zA-Z]+$/.test(child.icon) ? <span className="text-base">{child.icon}</span> : <Icon name={child.icon} size={16} />}
-                                        </div>
-                                        <h3 className="text-base font-semibold text-slate-700 dark:text-slate-300">
-                                            {child.name}
-                                        </h3>
-                                        {childLocked && <Lock size={14} className="text-amber-500" />}
-                                    </div>
-                                    {childLocked ? renderLocked(child) : (
-                                        <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
-                                            {childLinks.map(link => renderLinkCard(link))}
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </section>
-                );
-            })}
+            {getRootCategories(categories).map(cat => renderCategorySection(cat, 0))}
             
             {/* Empty State for Local Search */}
             {searchQuery && searchMode === 'local' && searchResults.length === 0 && (
