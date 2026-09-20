@@ -1,4 +1,4 @@
-import { Category, LinkItem } from "../types";
+import { Category, LinkItem, getRootCategories, getChildCategories } from "../types";
 
 /**
  * Generates a Netscape Bookmark HTML string compatible with Chrome/Edge/Firefox import.
@@ -16,7 +16,6 @@ export const generateBookmarkHtml = (links: LinkItem[], categories: Category[]):
 <DL><p>
 `;
 
-  // Helper to escape HTML special characters
   const escapeHtml = (unsafe: string) => {
     return unsafe
       .replace(/&/g, "&amp;")
@@ -26,7 +25,6 @@ export const generateBookmarkHtml = (links: LinkItem[], categories: Category[]):
       .replace(/'/g, "&#039;");
   };
 
-  // Group links by category
   const linksByCat = new Map<string, LinkItem[]>();
   links.forEach(link => {
     const list = linksByCat.get(link.categoryId) || [];
@@ -34,23 +32,22 @@ export const generateBookmarkHtml = (links: LinkItem[], categories: Category[]):
     linksByCat.set(link.categoryId, list);
   });
 
-  // 1. Process Categories
-  categories.forEach(cat => {
+  const writeFolder = (cat: Category, indent: string) => {
     const catLinks = linksByCat.get(cat.id) || [];
-    
-    html += `    <DT><H3 ADD_DATE="${now}" LAST_MODIFIED="${now}">${escapeHtml(cat.name)}</H3>\n`;
-    html += `    <DL><p>\n`;
-    
+    const children = getChildCategories(categories, cat.id);
+    html += `${indent}<DT><H3 ADD_DATE="${now}" LAST_MODIFIED="${now}">${escapeHtml(cat.name)}</H3>\n`;
+    html += `${indent}<DL><p>\n`;
     catLinks.forEach(link => {
       const date = Math.floor(link.createdAt / 1000);
       const iconAttr = link.icon ? ` ICON="${link.icon}"` : '';
-      html += `        <DT><A HREF="${link.url}" ADD_DATE="${date}"${iconAttr}>${escapeHtml(link.title)}</A>\n`;
+      html += `${indent}    <DT><A HREF="${link.url}" ADD_DATE="${date}"${iconAttr}>${escapeHtml(link.title)}</A>\n`;
     });
+    children.forEach(child => writeFolder(child, indent + '    '));
+    html += `${indent}</DL><p>\n`;
+  };
 
-    html += `    </DL><p>\n`;
-  });
+  getRootCategories(categories).forEach(cat => writeFolder(cat, '    '));
 
-  // 2. Process Uncategorized (links with invalid categoryId)
   const validCatIds = new Set(categories.map(c => c.id));
   const uncategorized = links.filter(l => !validCatIds.has(l.categoryId));
 

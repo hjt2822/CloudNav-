@@ -1,7 +1,5 @@
 import { LinkItem, Category } from '../types';
-import { v4 as uuidv4 } from 'uuid'; // Assuming uuid is available or we use a simple generator
 
-// Simple UUID generator fallback
 const generateId = () => {
   return Date.now().toString(36) + Math.random().toString(36).substring(2);
 };
@@ -11,6 +9,8 @@ export interface ImportResult {
   categories: Category[];
 }
 
+const GENERIC_FOLDERS = ['Bookmarks Bar', '书签栏', 'Other Bookmarks', '其他书签', 'Bookmarks', '书签'];
+
 export const parseBookmarks = async (file: File): Promise<ImportResult> => {
   const text = await file.text();
   const parser = new DOMParser();
@@ -18,36 +18,30 @@ export const parseBookmarks = async (file: File): Promise<ImportResult> => {
 
   const links: LinkItem[] = [];
   const categories: Category[] = [];
-  const categoryMap = new Map<string, string>(); // Name -> ID
+  const categoryMap = new Map<string, string>();
 
-  // Helper to get or create category ID
-  const getCategoryId = (name: string): string => {
-    if (!name) return 'common';
-    // Normalize: remove generic folders like "Bookmarks Bar"
-    if (['Bookmarks Bar', '书签栏', 'Other Bookmarks', '其他书签'].includes(name)) {
-        return 'common';
+  const getCategoryId = (name: string, parentId?: string): string => {
+    if (!name || GENERIC_FOLDERS.includes(name)) {
+        return parentId || 'common';
     }
 
-    if (categoryMap.has(name)) {
-      return categoryMap.get(name)!;
+    const key = parentId ? `${parentId}::${name}` : name;
+    if (categoryMap.has(key)) {
+      return categoryMap.get(key)!;
     }
     
-    // Check existing default categories could be mapped here if we had access, 
-    // but for now we create new ones.
     const newId = generateId();
     categories.push({
       id: newId,
       name: name,
-      icon: 'Folder' // Default icon for imported folders
+      icon: 'Folder',
+      parentId
     });
-    categoryMap.set(name, newId);
+    categoryMap.set(key, newId);
     return newId;
   };
 
-  // Traverse the DL/DT structure
-  // Chrome structure: <DT><H3>Folder Name</H3><DL> ...items... </DL>
-  
-  const traverse = (element: Element, currentCategoryName: string) => {
+  const traverse = (element: Element, currentCategoryId: string, depth: number) => {
     const children = Array.from(element.children);
     
     for (let i = 0; i < children.length; i++) {
@@ -55,17 +49,24 @@ export const parseBookmarks = async (file: File): Promise<ImportResult> => {
       const tagName = node.tagName.toUpperCase();
 
       if (tagName === 'DT') {
-        // DT can contain an H3 (Folder) or A (Link)
-        const h3 = node.querySelector('h3');
-        const a = node.querySelector('a');
-        const dl = node.querySelector('dl');
+        const h3 = node.querySelector(':scope > h3');
+        const a = node.querySelector(':scope > a');
+        const dl = node.querySelector(':scope > dl');
 
         if (h3 && dl) {
-            // It's a folder
             const folderName = h3.textContent || 'Unknown';
-            traverse(dl, folderName);
+            let nextId = currentCategoryId;
+            if (GENERIC_FOLDERS.includes(folderName)) {
+                nextId = currentCategoryId;
+            } else if (depth === 0) {
+                nextId = getCategoryId(folderName);
+            } else {
+                const parent = categories.find(c => c.id === currentCategoryId);
+                const rootId = parent?.parentId || (currentCategoryId === 'common' ? undefined : currentCategoryId);
+                nextId = getCategoryId(folderName, rootId);
+            }
+            traverse(dl, nextId, depth + 1);
         } else if (a) {
-            // It's a link
             const title = a.textContent || a.getAttribute('href') || 'No Title';
             const url = a.getAttribute('href');
             
@@ -74,19 +75,23 @@ export const parseBookmarks = async (file: File): Promise<ImportResult> => {
                     id: generateId(),
                     title: title,
                     url: url,
-                    categoryId: getCategoryId(currentCategoryName),
+                    categoryId: currentCategoryId,
                     createdAt: Date.now(),
                     icon: a.getAttribute('icon') || undefined
                 });
             }
+        } else if (dl) {
+            traverse(dl, currentCategoryId, depth);
         }
+      } else if (tagName === 'DL') {
+        traverse(node, currentCategoryId, depth);
       }
     }
   };
 
   const rootDl = doc.querySelector('dl');
   if (rootDl) {
-    traverse(rootDl, 'common');
+    traverse(rootDl, 'common', 0);
   }
 
   return { links, categories };

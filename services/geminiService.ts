@@ -93,10 +93,14 @@ export const generateLinkDescription = async (title: string, url: string, config
 /**
  * Suggests a category
  */
-export const suggestCategory = async (title: string, url: string, categories: {id: string, name: string}[], config: AIConfig): Promise<string | null> => {
+export const suggestCategory = async (title: string, url: string, categories: {id: string, name: string, parentId?: string}[], config: AIConfig): Promise<string | null> => {
     if (!config.apiKey) return null;
 
-    const catList = categories.map(c => `${c.id}: ${c.name}`).join('\n');
+    const catList = categories.map(c => {
+        const parent = c.parentId ? categories.find(p => p.id === c.parentId) : undefined;
+        const label = parent ? `${parent.name} / ${c.name}` : c.name;
+        return `${c.id}: ${label}`;
+    }).join('\n');
     const prompt = `
         Website: "${title}" (${url})
 
