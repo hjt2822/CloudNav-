@@ -61,9 +61,8 @@ export const parseBookmarks = async (file: File): Promise<ImportResult> => {
             } else if (depth === 0) {
                 nextId = getCategoryId(folderName);
             } else {
-                const parent = categories.find(c => c.id === currentCategoryId);
-                const rootId = parent?.parentId || (currentCategoryId === 'common' ? undefined : currentCategoryId);
-                nextId = getCategoryId(folderName, rootId);
+                const parentId = currentCategoryId === 'common' ? undefined : currentCategoryId;
+                nextId = getCategoryId(folderName, parentId);
             }
             traverse(dl, nextId, depth + 1);
         } else if (a) {

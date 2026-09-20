@@ -97,9 +97,16 @@ export const suggestCategory = async (title: string, url: string, categories: {i
     if (!config.apiKey) return null;
 
     const catList = categories.map(c => {
-        const parent = c.parentId ? categories.find(p => p.id === c.parentId) : undefined;
-        const label = parent ? `${parent.name} / ${c.name}` : c.name;
-        return `${c.id}: ${label}`;
+        // Build the full category path (supports any nesting depth)
+        const names: string[] = [];
+        let current: {id: string, name: string, parentId?: string} | undefined = c;
+        const seen = new Set<string>();
+        while (current && !seen.has(current.id)) {
+            seen.add(current.id);
+            names.unshift(current.name);
+            current = current.parentId ? categories.find(p => p.id === current!.parentId) : undefined;
+        }
+        return `${c.id}: ${names.join(' / ')}`;
     }).join('\n');
     const prompt = `
         Website: "${title}" (${url})
