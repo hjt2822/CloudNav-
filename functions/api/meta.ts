@@ -34,15 +34,15 @@ const stripTags = (s: string): string => s.replace(/<[^>]*>/g, ' ');
 const cleanText = (s: string): string =>
   decodeEntities(stripTags(s)).replace(/\s+/g, ' ').trim();
 
-const metaContent = (head: string, attr: string, key: string): string => {
-  const re = new RegExp(
-    `<meta[^>]*${attr}\\s*=\\s*["']${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>`,
-    'i'
-  );
-  const tag = head.match(re);
-  if (!tag) return '';
-  const c = tag[0].match(/content\s*=\s*["']([\s\S]*?)["']/i);
-  return c ? cleanText(c[1]) : '';
+const metaContent = (head: string, key: string): string => {
+  const tags = head.match(/<meta[^>]*>/gi) || [];
+  for (const tag of tags) {
+    const nameM = tag.match(/(?:name|property|itemprop)\s*=\s*["']([^"']+)["']/i);
+    if (!nameM || nameM[1].toLowerCase() !== key) continue;
+    const contentM = tag.match(/content\s*=\s*["']([\s\S]*?)["']/i);
+    if (contentM) return cleanText(contentM[1]);
+  }
+  return '';
 };
 
 export const onRequestGet = async (context: { request: Request; env: any }) => {
@@ -92,10 +92,23 @@ export const onRequestGet = async (context: { request: Request; env: any }) => {
     const titleMatch = head.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
     const title = titleMatch ? cleanText(titleMatch[1]) : '';
 
-    const description =
-      metaContent(head, 'name', 'description') ||
-      metaContent(head, 'property', 'og:description') ||
+    let description =
+      metaContent(head, 'description') ||
+      metaContent(head, 'og:description') ||
       '';
+
+    // 无 meta 描述时，取正文可见文本兜底
+    if (!description) {
+      const bodyStart = html.search(/<body[^>]*>/i);
+      const body = html.slice(bodyStart > -1 ? bodyStart : 150000, (bodyStart > -1 ? bodyStart : 150000) + 150000);
+      const visible = cleanText(
+        body
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      );
+      description = visible.slice(0, 160);
+    }
 
     // 页面内声明的 icon（apple-touch-icon 优先，其次 icon）
     let pageIcon = '';
