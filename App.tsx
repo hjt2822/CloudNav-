@@ -604,13 +604,47 @@ function App() {
       const isDragging = draggedLinkId === link.id;
       const isDropTarget = dropTargetLinkId === link.id;
 
-      // NavSphere 风格：图标居左，标题 + 描述居右；无描述时显示域名
+      // NavSphere 卡片结构：Card 外壳（hover 上浮）+ block 链接 + p-6 头部
+      // 图标左（w-8→sm:w-11），右侧标题 font-semibold 与描述分层
+      if (isSimple) {
+          return (
+            <a
+                key={link.id}
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                draggable
+                onDragStart={(e) => handleLinkDragStart(e, link)}
+                onDragOver={(e) => handleLinkDragOverCard(e, link)}
+                onDragLeave={() => { if (dropTargetLinkId === link.id) setDropTargetLinkId(null); }}
+                onDrop={(e) => handleLinkDropOnCard(e, link)}
+                onDragEnd={clearLinkDrag}
+                onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    let x = e.clientX;
+                    let y = e.clientY;
+                    if (x + 180 > window.innerWidth) x = window.innerWidth - 190;
+                    if (y + 220 > window.innerHeight) y = window.innerHeight - 230;
+                    setContextMenu({ x, y, link });
+                    return false;
+                }}
+                className={`group relative flex items-center p-2 gap-2 bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700/50 shadow-sm hover:shadow-lg hover:-translate-y-1 transition-all duration-300 ease-in-out ${
+                  isDragging ? 'opacity-40' : ''
+                } ${isDropTarget ? 'ring-2 ring-blue-400 border-transparent' : ''}`}
+                title={link.description || link.url}
+            >
+                <Favicon url={link.url} icon={link.icon} title={link.title} className="w-6 h-6" letterClassName="text-xs" />
+                <h3 className="font-medium text-sm text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    {link.title}
+                </h3>
+            </a>
+          );
+      }
+
       return (
-        <a
+        <div
             key={link.id}
-            href={link.url}
-            target="_blank"
-            rel="noopener noreferrer"
             draggable
             onDragStart={(e) => handleLinkDragStart(e, link)}
             onDragOver={(e) => handleLinkDragOverCard(e, link)}
@@ -622,49 +656,54 @@ function App() {
                 e.stopPropagation();
                 let x = e.clientX;
                 let y = e.clientY;
-                // Boundary adjustment
                 if (x + 180 > window.innerWidth) x = window.innerWidth - 190;
                 if (y + 220 > window.innerHeight) y = window.innerHeight - 230;
                 setContextMenu({ x, y, link });
                 return false;
             }}
-            className={`group relative flex ${isSimple ? 'flex-row items-center p-2 gap-2' : 'items-center gap-3 p-3'} bg-white dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700/50 shadow-sm hover:shadow-lg hover:border-slate-200 dark:hover:border-slate-600 hover:-translate-y-1 transition-all duration-300 ease-in-out hover:bg-blue-50 dark:hover:bg-slate-750 ${
+            className={`rounded-xl border bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-50 shadow overflow-hidden transition-all duration-300 ease-in-out transform hover:-translate-y-1 hover:shadow-lg cursor-pointer ${
               isDragging ? 'opacity-40' : ''
             } ${isDropTarget ? 'ring-2 ring-blue-400 border-transparent' : ''}`}
-            title={link.description || link.url}
         >
-            <Favicon
-                url={link.url}
-                icon={link.icon}
-                title={link.title}
-                className={isSimple ? 'w-6 h-6' : 'w-10 h-10'}
-                letterClassName={isSimple ? 'text-xs' : 'text-sm'}
-            />
-            <div className="flex-1 min-w-0">
-                <h3 className="font-medium text-sm text-slate-800 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                    {link.title}
-                </h3>
-                {!isSimple && (
-                    <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-1 mt-0.5">
-                        {link.description || getHostname(link.url)}
-                    </p>
-                )}
-                {!isSimple && link.tags && link.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                        {link.tags.slice(0, 3).map(tag => (
-                            <span
-                                key={tag}
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSearchMode('local'); setSearchQuery(tag); }}
-                                className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer transition-colors"
-                                title={`筛选标签: ${tag}`}
-                            >
-                                #{tag}
-                            </span>
-                        ))}
+            <a
+                href={link.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block h-full"
+                title={link.description || link.url}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div className="flex flex-col space-y-1.5 p-6">
+                    <div className="flex items-start gap-2 sm:gap-4">
+                        <div className="flex-shrink-0 w-8 h-8 sm:w-11 sm:h-11">
+                            <Favicon url={link.url} icon={link.icon} title={link.title} className="w-full h-full" />
+                        </div>
+                        <div className="space-y-0.5 sm:space-y-1 min-w-0 flex-1">
+                            <div className="font-semibold tracking-tight text-sm sm:text-base text-slate-800 dark:text-slate-200 truncate">
+                                {link.title}
+                            </div>
+                            <div className="text-slate-500 dark:text-slate-400 text-xs sm:text-sm line-clamp-1">
+                                {link.description || getHostname(link.url)}
+                            </div>
+                            {link.tags && link.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                    {link.tags.slice(0, 3).map(tag => (
+                                        <span
+                                            key={tag}
+                                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setSearchMode('local'); setSearchQuery(tag); }}
+                                            className="text-[10px] leading-none px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer transition-colors"
+                                            title={`筛选标签: ${tag}`}
+                                        >
+                                            #{tag}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
-                )}
-            </div>
-        </a>
+                </div>
+            </a>
+        </div>
       );
   };
 
@@ -755,7 +794,7 @@ function App() {
 
   const renderLinkGrid = (sectionLinks: LinkItem[]) => (
       sectionLinks.length === 0 ? null : (
-                    <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3'}`}>
+          <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3'}`}>
               {sectionLinks.map(link => renderLinkCard(link))}
           </div>
       )
@@ -792,7 +831,7 @@ function App() {
                       </div>
                       <h2 
                         onClick={() => setIsCatManagerOpen(true)}
-                        className={`${depth === 0 ? 'text-lg font-bold text-slate-800 dark:text-slate-200' : 'text-base font-semibold text-slate-700 dark:text-slate-300'} cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors`}
+                        className={`${depth === 0 ? 'text-base font-medium tracking-tight text-slate-800 dark:text-slate-200' : 'text-sm font-medium tracking-tight text-slate-700 dark:text-slate-300'} cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors`}
                         title="点击编辑分类"
                       >
                           {cat.name}
@@ -1155,7 +1194,7 @@ function App() {
                             置顶 / 常用
                         </h2>
                     </div>
-          <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3'}`}>
+                    <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3'}`}>
                         {pinnedLinks.map(link => renderLinkCard(link))}
                     </div>
                 </section>
