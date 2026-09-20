@@ -80,19 +80,29 @@ const ImportModal: React.FC<ImportModalProps> = ({
             }
         });
 
-        const existingRootNames = new Set(categories.filter(c => !c.parentId).map(c => c.name));
-        const existingChildKeys = new Set(
-            categories.filter(c => c.parentId).map(c => {
-                const parent = categories.find(p => p.id === c.parentId);
-                return parent ? `${parent.name}::${c.name}` : c.name;
-            })
-        );
-        const uniqueNewCategories = result.categories.filter(c => {
-            if (!c.parentId) return !existingRootNames.has(c.name);
-            const parent = result.categories.find(p => p.id === c.parentId);
-            const key = parent ? `${parent.name}::${c.name}` : c.name;
-            return !existingChildKeys.has(key);
-        });
+        const existingPathKeys = new Set(categories.map(c => {
+            const names: string[] = [];
+            let cur: Category | undefined = c;
+            const seen = new Set<string>();
+            while (cur && !seen.has(cur.id)) {
+                seen.add(cur.id);
+                names.unshift(cur.name);
+                cur = cur.parentId ? categories.find(p => p.id === cur!.parentId) : undefined;
+            }
+            return names.join(' / ');
+        }));
+        const parsedPathOf = (cat: Category): string => {
+            const names: string[] = [];
+            let cur: Category | undefined = cat;
+            const seen = new Set<string>();
+            while (cur && !seen.has(cur.id)) {
+                seen.add(cur.id);
+                names.unshift(cur.name);
+                cur = cur.parentId ? result.categories.find(p => p.id === cur!.parentId) : undefined;
+            }
+            return names.join(' / ');
+        };
+        const uniqueNewCategories = result.categories.filter(c => !existingPathKeys.has(parsedPathOf(c)));
 
         setParsedLinks(uniqueNewLinks);
         setParsedCategories(result.categories);
@@ -123,53 +133,46 @@ const ImportModal: React.FC<ImportModalProps> = ({
           finalCategories = []; 
       } else {
           // Keep structure mode
-          // We need to merge categories carefully.
-          // Since parseBookmarks generates IDs for categories, if a category name already exists in `categories`, 
-          // we should remap the links to the existing category ID instead of creating a new duplicate-named category.
+          // Match parsed categories against existing ones by full path ("A / B / C") so
+          // same-named categories at different depths stay distinct, and any nesting depth merges correctly.
           
-          const rootNameToId = new Map<string, string>();
-          const childKeyToId = new Map<string, string>();
-          categories.forEach(c => {
-              if (!c.parentId) rootNameToId.set(c.name, c.id);
-          });
-          categories.forEach(c => {
-              if (c.parentId) {
-                  const parent = categories.find(p => p.id === c.parentId);
-                  if (parent) childKeyToId.set(`${parent.name}::${c.name}`, c.id);
+          const pathOf = (cats: Category[], catId: string): string => {
+              const names: string[] = [];
+              let cur: Category | undefined = cats.find(c => c.id === catId);
+              const seen = new Set<string>();
+              while (cur && !seen.has(cur.id)) {
+                  seen.add(cur.id);
+                  names.unshift(cur.name);
+                  cur = cur.parentId ? cats.find(c => c.id === cur!.parentId) : undefined;
               }
-          });
+              return names.join(' / ');
+          };
+
+          const pathKeyToId = new Map<string, string>();
+          categories.forEach(c => pathKeyToId.set(pathOf(categories, c.id), c.id));
 
           const categoriesToAdd: Category[] = [];
+          const parsedKeyToFinalId = new Map<string, string>();
 
-          parsedCategories.filter(pc => !pc.parentId).forEach(pc => {
-              if (!rootNameToId.has(pc.name)) {
+          // parsedCategories are in top-down order (parents before children)
+          parsedCategories.forEach(pc => {
+              const key = pathOf(parsedCategories, pc.id);
+              const existingId = pathKeyToId.get(key);
+              if (existingId) {
+                  parsedKeyToFinalId.set(key, existingId);
+              } else {
                   categoriesToAdd.push(pc);
-                  rootNameToId.set(pc.name, pc.id);
-              }
-          });
-
-          parsedCategories.filter(pc => !!pc.parentId).forEach(pc => {
-              const parentParsed = parsedCategories.find(p => p.id === pc.parentId);
-              const parentName = parentParsed?.name;
-              const existingParentId = parentName ? rootNameToId.get(parentName) : undefined;
-              const childKey = parentName ? `${parentName}::${pc.name}` : pc.name;
-              if (!childKeyToId.has(childKey)) {
-                  const remapped = { ...pc, parentId: existingParentId };
-                  categoriesToAdd.push(remapped);
-                  childKeyToId.set(childKey, remapped.id);
+                  parsedKeyToFinalId.set(key, pc.id);
+                  pathKeyToId.set(key, pc.id);
               }
           });
 
           finalLinks = finalLinks.map(link => {
-             const originalCat = parsedCategories.find(c => c.id === link.categoryId)
-                                 || categories.find(c => c.id === link.categoryId);
-             if (!originalCat) return { ...link, categoryId: 'common' };
-             if (!originalCat.parentId) {
-                 return { ...link, categoryId: rootNameToId.get(originalCat.name) || 'common' };
+             if (parsedCategories.some(c => c.id === link.categoryId)) {
+                 const key = pathOf(parsedCategories, link.categoryId);
+                 return { ...link, categoryId: parsedKeyToFinalId.get(key) || 'common' };
              }
-             const parentParsed = parsedCategories.find(p => p.id === originalCat.parentId);
-             const key = parentParsed ? `${parentParsed.name}::${originalCat.name}` : originalCat.name;
-             return { ...link, categoryId: childKeyToId.get(key) || rootNameToId.get(originalCat.name) || 'common' };
+             return link;
           });
 
           finalCategories = categoriesToAdd;

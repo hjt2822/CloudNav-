@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { X, Search, Plus, Trash2, Check, Globe, Wand2 } from 'lucide-react';
 import { SearchEngine } from '../types';
+import { probeFavicon, getHostname } from '../services/favicon';
 
 interface SearchSettingsModalProps {
   isOpen: boolean;
@@ -60,25 +61,12 @@ const SearchSettingsModal: React.FC<SearchSettingsModalProps> = ({
     }
   };
 
-  const fetchIconFromUrl = (targetUrl: string) => {
+  const fetchIconFromUrl = async (targetUrl: string) => {
       if (!targetUrl) return;
-      try {
-        let normalizedUrl = targetUrl;
-        if (!targetUrl.startsWith('http')) {
-            normalizedUrl = 'https://' + targetUrl;
-        }
-        
-        // 尝试解析域名
-        const urlObj = new URL(normalizedUrl);
-        const origin = urlObj.origin;
-        
-        // 使用 Google 的 favicon 服务获取图标
-        const newIconUrl = `https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${encodeURIComponent(origin)}&size=128`;
-        
-        setNewIcon(newIconUrl);
-      } catch (e) {
-          // invalid url
-      }
+      const normalizedUrl = targetUrl.startsWith('http') ? targetUrl : 'https://' + targetUrl;
+      const best = await probeFavicon(normalizedUrl);
+      const host = getHostname(normalizedUrl);
+      setNewIcon(best || `https://api.iowen.cn/favicon/${host}.png`);
   };
 
   const handleUrlBlur = () => {

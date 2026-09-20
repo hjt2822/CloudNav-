@@ -1,8 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Sparkles, Loader2, Pin, AlertTriangle, Wand2, Image as ImageIcon } from 'lucide-react';
+import { X, Sparkles, Loader2, Pin, AlertTriangle, Wand2, Image as ImageIcon, Tag } from 'lucide-react';
 import { LinkItem, Category, AIConfig, flattenCategoryTree, getCategoryLabel } from '../types';
 import { generateLinkDescription, suggestCategory } from '../services/geminiService';
+import { probeFavicon, getHostname } from '../services/favicon';
+import Favicon from './Favicon';
 
 interface LinkModalProps {
   isOpen: boolean;
@@ -21,6 +23,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
   const [description, setDescription] = useState('');
   const [categoryId, setCategoryId] = useState(categories[0]?.id || 'common');
   const [pinned, setPinned] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   
   // New State for Icon Auto-fetch
@@ -37,6 +41,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
         setDescription(initialData.description || '');
         setCategoryId(initialData.categoryId);
         setPinned(initialData.pinned || false);
+        setTags(initialData.tags || []);
+        setTagInput('');
         // Default to true even for edits, allowing user to opt-out manually
         setAutoFetchIcon(true);
       } else {
@@ -46,29 +52,33 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
         setDescription('');
         setCategoryId(categories[0]?.id || 'common');
         setPinned(false);
+        setTags([]);
+        setTagInput('');
         setAutoFetchIcon(true);
       }
       setDuplicateWarning('');
     }
   }, [isOpen, initialData, categories]);
 
-  // Logic to fetch icon
-  const fetchIconFromUrl = (targetUrl: string) => {
+  // 智能获取图标：多源探测，返回第一个真正能加载的图标 URL
+  const fetchIconFromUrl = async (targetUrl: string) => {
       if (!targetUrl) return;
+      const normalizedUrl = targetUrl.startsWith('http') ? targetUrl : 'https://' + targetUrl;
+      const best = await probeFavicon(normalizedUrl);
+      const host = getHostname(normalizedUrl);
+      setIconUrl(best || `https://api.iowen.cn/favicon/${host}.png`);
+  };
+
+  // 智能获取网站信息（参考 NavSphere）：服务端 /api/meta 抓取标题与描述，失败时静默降级
+  const fetchSiteMeta = async (targetUrl: string) => {
       try {
-        let normalizedUrl = targetUrl;
-        if (!targetUrl.startsWith('http')) {
-            normalizedUrl = 'https://' + targetUrl;
-        }
-        
-        // Use Google's specialized favicon service which is more robust
-        // t2.gstatic.com is used by Chrome internal pages
-        // fallback_opts=TYPE,SIZE,URL ensures it tries multiple ways to get an icon
-        const newIcon = `https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${encodeURIComponent(normalizedUrl)}&size=128`;
-        
-        setIconUrl(newIcon);
-      } catch (e) {
-          // invalid url
+          const resp = await fetch(`/api/meta?url=${encodeURIComponent(targetUrl)}`);
+          if (!resp.ok) return;
+          const data = await resp.json();
+          if (data?.title && !title) setTitle(data.title);
+          if (data?.description && !description) setDescription(data.description);
+      } catch {
+          // dev 预览环境无 functions 或站点不可达，忽略
       }
   };
 
@@ -99,11 +109,22 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
       if (autoFetchIcon) {
           fetchIconFromUrl(normalizedUrl);
       }
+
+      // 3. Auto fetch title & description (Cloudflare Pages Functions)
+      fetchSiteMeta(normalizedUrl);
   };
+
+  const addTag = () => {
+    const t = tagInput.trim().replace(/^#/, '');
+    if (t && !tags.includes(t)) setTags([...tags, t]);
+    setTagInput('');
+  };
+
+  const removeTag = (t: string) => setTags(tags.filter(x => x !== t));
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    onSave({ title, url, description, categoryId, pinned, icon: iconUrl });
+    onSave({ title, url, description, categoryId, pinned, icon: iconUrl, tags: tags.length > 0 ? tags : undefined });
     onClose();
   };
 
@@ -186,15 +207,7 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
              <div className="flex gap-2">
                  {/* Preview */}
                  <div className="shrink-0 w-10 h-10 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 flex items-center justify-center overflow-hidden">
-                    {iconUrl ? (
-                         <img 
-                            src={iconUrl} 
-                            className="w-full h-full object-contain"
-                            onError={(e) => {e.currentTarget.style.display='none'}}
-                         />
-                    ) : (
-                        <ImageIcon size={18} className="text-slate-400"/>
-                    )}
+                    <Favicon url={url || undefined} icon={iconUrl || undefined} title={title || '？'} className="w-full h-full" />
                  </div>
                  
                  {/* Input */}
@@ -253,6 +266,38 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
                   onChange={(e) => setDescription(e.target.value)}
                   className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all h-20 resize-none"
                   placeholder="简短描述..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1 dark:text-slate-300 flex items-center gap-1">
+                  <Tag size={12} className="text-slate-400" /> 标签 (选填)
+                </label>
+                <div className={`flex flex-wrap items-center gap-1.5 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 focus-within:ring-2 focus-within:ring-blue-500 transition-all ${tags.length > 0 ? '' : 'hidden'}`}>
+                  {tags.map(t => (
+                    <span key={t} className="flex items-center gap-1 text-xs bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 px-2 py-1 rounded">
+                      #{t}
+                      <button type="button" onClick={() => removeTag(t)} className="hover:text-blue-800 dark:hover:text-blue-100">
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    type="text"
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+                    className="flex-1 min-w-[80px] bg-transparent outline-none text-sm dark:text-white"
+                    placeholder=""
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+                  className={`w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all text-sm ${tags.length > 0 ? 'hidden' : ''}`}
+                  placeholder="输入标签后回车添加，可添加多个"
                 />
               </div>
 

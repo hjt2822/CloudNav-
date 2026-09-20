@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
-import { X, ArrowUp, ArrowDown, Trash2, Edit2, Plus, Check, Lock, Merge } from 'lucide-react';
-import { Category, LinkItem, flattenCategoryTree, getChildCategories, getRootCategories } from '../types';
+import { X, ArrowUp, ArrowDown, Trash2, Edit2, Plus, Check, Lock, Merge, CornerDownRight } from 'lucide-react';
+import { Category, LinkItem, getChildCategories, getRootCategories, isDescendant, getCategoryPath } from '../types';
 import Icon from './Icon';
 
 interface CategoryManagerModalProps {
@@ -65,18 +65,67 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
   const [mergingCatId, setMergingCatId] = useState<string | null>(null);
   const [targetMergeId, setTargetMergeId] = useState<string>('');
 
+  // Category drag & drop (nest under another category)
+  const [dragCatId, setDragCatId] = useState<string | null>(null);
+  const [dragOverCatId, setDragOverCatId] = useState<string | null>(null);
+  const [dragOverRoot, setDragOverRoot] = useState(false);
+
   if (!isOpen) return null;
 
-  const orderedCats = flattenCategoryTree(categories);
   const rootCats = getRootCategories(categories);
 
-  const siblingIndex = (cat: Category) => {
-    const siblings = categories.filter(c => (c.parentId || '') === (cat.parentId || ''));
-    return siblings.findIndex(c => c.id === cat.id);
+  const clearDrag = () => {
+    setDragCatId(null);
+    setDragOverCatId(null);
+    setDragOverRoot(false);
   };
 
-  const siblingCount = (cat: Category) =>
-    categories.filter(c => (c.parentId || '') === (cat.parentId || '')).length;
+  const handleCatDragStart = (e: React.DragEvent, cat: Category) => {
+    setDragCatId(cat.id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', cat.id);
+  };
+
+  const handleCatDragOverRow = (e: React.DragEvent, cat: Category) => {
+    if (!dragCatId || dragCatId === cat.id) return;
+    if (isDescendant(categories, dragCatId, cat.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverCatId(cat.id);
+    setDragOverRoot(false);
+  };
+
+  const handleCatDropRow = (e: React.DragEvent, target: Category) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const srcId = dragCatId;
+    if (!srcId || srcId === target.id || isDescendant(categories, srcId, target.id)) { clearDrag(); return; }
+    const src = categories.find(c => c.id === srcId);
+    if (src && (src.parentId || '') !== target.id) {
+      onUpdateCategories(categories.map(c => c.id === srcId ? { ...c, parentId: target.id } : c));
+    }
+    clearDrag();
+  };
+
+  const handleCatDragOverRoot = (e: React.DragEvent) => {
+    if (!dragCatId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverRoot(true);
+    setDragOverCatId(null);
+  };
+
+  const handleCatDropRoot = (e: React.DragEvent) => {
+    e.preventDefault();
+    const srcId = dragCatId;
+    if (!srcId) { clearDrag(); return; }
+    const src = categories.find(c => c.id === srcId);
+    if (src && src.parentId) {
+      onUpdateCategories(categories.map(c => c.id === srcId ? { ...c, parentId: undefined } : c));
+    }
+    clearDrag();
+  };
 
   const handleMove = (cat: Category, direction: 'up' | 'down') => {
     const siblings = categories.filter(c => (c.parentId || '') === (cat.parentId || ''));
@@ -101,16 +150,12 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
 
   const saveEdit = () => {
     if (!editingId || !editName.trim()) return;
-    const current = categories.find(c => c.id === editingId);
-    if (!current) return;
-    const hasChildren = getChildCategories(categories, editingId).length > 0;
-    const nextParentId = hasChildren ? undefined : (editParentId || undefined);
     const newCats = categories.map(c => c.id === editingId ? { 
         ...c, 
         name: editName.trim(),
         icon: editIcon.trim(),
         password: editPassword.trim() || undefined,
-        parentId: nextParentId
+        parentId: editParentId || undefined
     } : c);
     onUpdateCategories(newCats);
     setEditingId(null);
@@ -134,182 +179,234 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
 
   const openMerge = (catId: string) => {
       setMergingCatId(catId);
-      const firstTarget = categories.find(c => c.id !== catId);
+      const excluded = new Set([catId, ...Array.from((function*(){ 
+        const collect = (pid: string): string[] => getChildCategories(categories, pid).flatMap(c => [c.id, ...collect(c.id)]);
+        return collect(catId);
+      })())]);
+      const firstTarget = categories.find(c => !excluded.has(c.id));
       if (firstTarget) setTargetMergeId(firstTarget.id);
   };
 
   const executeMerge = () => {
       if (!mergingCatId || !targetMergeId) return;
       if (mergingCatId === targetMergeId) return;
-      if (!confirm('确定合并吗？合并后原分类将被删除。')) return;
+      if (isDescendant(categories, mergingCatId, targetMergeId)) return;
+      if (!confirm('确定合并吗？合并后原分类将被删除，其子分类与链接都将移入目标分类。')) return;
 
-      const target = categories.find(c => c.id === targetMergeId);
       const newLinks = links.map(l => l.categoryId === mergingCatId ? { ...l, categoryId: targetMergeId } : l);
       const newCats = categories
         .filter(c => c.id !== mergingCatId)
-        .map(c => {
-          if (c.parentId !== mergingCatId) return c;
-          const nextParent = target && !target.parentId ? target.id : undefined;
-          return { ...c, parentId: nextParent };
-        });
+        .map(c => c.parentId === mergingCatId ? { ...c, parentId: targetMergeId } : c);
 
       onUpdateCategories(newCats, newLinks);
       setMergingCatId(null);
   };
 
   const parentOptionsForEdit = (cat: Category) =>
-    rootCats.filter(c => c.id !== cat.id);
+    categories.filter(c => c.id !== cat.id && !isDescendant(categories, cat.id, c.id));
+
+  const renderCatRow = (cat: Category, depth: number): React.ReactNode => {
+    const children = getChildCategories(categories, cat.id);
+    const siblings = categories.filter(c => (c.parentId || '') === (cat.parentId || ''));
+    const idx = siblings.findIndex(c => c.id === cat.id);
+    const isEditing = editingId === cat.id;
+    const isMerging = mergingCatId === cat.id;
+    const isDragOver = dragOverCatId === cat.id;
+    const isDragging = dragCatId === cat.id;
+
+    return (
+      <div key={cat.id} className="space-y-1">
+        <div 
+          draggable={!isEditing && !isMerging}
+          onDragStart={(e) => handleCatDragStart(e, cat)}
+          onDragOver={(e) => handleCatDragOverRow(e, cat)}
+          onDragLeave={() => { if (dragOverCatId === cat.id) setDragOverCatId(null); }}
+          onDrop={(e) => handleCatDropRow(e, cat)}
+          onDragEnd={clearDrag}
+          className={`flex flex-col p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg group gap-2 border border-slate-100 dark:border-slate-600 ${
+            isDragOver ? 'ring-2 ring-blue-400 border-transparent' : ''
+          } ${isDragging ? 'opacity-40' : ''}`}
+          style={{ marginLeft: depth * 16 }}
+        >
+          <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-1 mr-2">
+                <button 
+                  onClick={() => handleMove(cat, 'up')}
+                  disabled={idx === 0}
+                  className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
+                >
+                  <ArrowUp size={14} />
+                </button>
+                <button 
+                  onClick={() => handleMove(cat, 'down')}
+                  disabled={idx === siblings.length - 1}
+                  className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
+                >
+                  <ArrowDown size={14} />
+                </button>
+              </div>
+
+              <div className="flex-1 min-w-0">
+                {isEditing ? (
+                  <div className="flex flex-col gap-2">
+                      <div className="flex gap-2">
+                          <div className="relative w-32 shrink-0">
+                            <select
+                                value={editIcon}
+                                onChange={(e) => setEditIcon(e.target.value)}
+                                className="w-full p-1.5 text-sm rounded border border-blue-500 dark:bg-slate-800 dark:text-white outline-none appearance-none"
+                            >
+                                {COMMON_ICONS.map(icon => (
+                                    <option key={icon.value} value={icon.value}>
+                                        {icon.label}
+                                    </option>
+                                ))}
+                            </select>
+                            <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                                <Icon name={editIcon} size={14} />
+                            </div>
+                          </div>
+                          <input 
+                            type="text" 
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="flex-1 p-1.5 px-2 text-sm rounded border border-blue-500 dark:bg-slate-800 dark:text-white outline-none"
+                            placeholder="分类名称"
+                            autoFocus
+                          />
+                      </div>
+                      <div className="flex items-center gap-2">
+                          <CornerDownRight size={14} className="text-slate-400 shrink-0" />
+                          <select
+                            value={editParentId}
+                            onChange={(e) => setEditParentId(e.target.value)}
+                            className="flex-1 p-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white outline-none"
+                          >
+                            <option value="">顶级分类</option>
+                            {parentOptionsForEdit(cat).map(c => (
+                              <option key={c.id} value={c.id}>{getCategoryPath(categories, c)}</option>
+                            ))}
+                          </select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                          <Lock size={14} className="text-slate-400" />
+                          <input 
+                            type="text" 
+                            value={editPassword}
+                            onChange={(e) => setEditPassword(e.target.value)}
+                            className="flex-1 p-1.5 px-2 text-xs rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white outline-none"
+                            placeholder="设置密码 (留空则不加密)"
+                          />
+                      </div>
+                  </div>
+                ) : isMerging ? (
+                    <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 p-2 rounded">
+                        <span className="text-sm dark:text-slate-200 whitespace-nowrap">合并到 &rarr;</span>
+                        <select 
+                            value={targetMergeId}
+                            onChange={(e) => setTargetMergeId(e.target.value)}
+                            className="flex-1 text-sm p-1 rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
+                        >
+                            {categories
+                              .filter(c => c.id !== cat.id && !isDescendant(categories, cat.id, c.id))
+                              .map(c => (
+                                <option key={c.id} value={c.id}>{getCategoryPath(categories, c)}</option>
+                              ))}
+                        </select>
+                        <button onClick={executeMerge} className="text-xs bg-blue-600 text-white px-2 py-1 rounded">确认</button>
+                        <button onClick={() => setMergingCatId(null)} className="text-xs text-slate-500 px-2 py-1">取消</button>
+                    </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded bg-white dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-600 cursor-grab active:cursor-grabbing shrink-0">
+                         {cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon) 
+                            ? <span className="text-lg">{cat.icon}</span> 
+                            : <Icon name={cat.icon} size={16} />
+                         }
+                      </div>
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-2">
+                            {depth > 0 && <CornerDownRight size={12} className="text-slate-400 shrink-0" />}
+                            <span className="font-medium dark:text-slate-200 truncate">{cat.name}</span>
+                            {cat.password && <Lock size={12} className="text-amber-500 shrink-0" />}
+                        </div>
+                        <span className="text-xs text-slate-400">
+                          {links.filter(l => l.categoryId === cat.id).length} 个链接
+                          {children.length > 0 && ` · ${children.length} 个子分类`}
+                        </span>
+                      </div>
+                  </div>
+                )}
+              </div>
+
+              {!isEditing && !isMerging && (
+                  <div className="flex items-center gap-1 self-start mt-2 shrink-0">
+                    <button 
+                      onClick={() => { setNewCatParentId(cat.id); setNewCatName(''); }}
+                      className="p-1.5 text-slate-400 hover:text-green-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded"
+                      title="添加子分类"
+                    >
+                        <Plus size={14} />
+                    </button>
+                    <button onClick={() => startEdit(cat)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded" title="编辑">
+                        <Edit2 size={14} />
+                    </button>
+                    <button onClick={() => openMerge(cat.id)} className="p-1.5 text-slate-400 hover:text-purple-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded" title="合并到其他分类">
+                        <Merge size={14} />
+                    </button>
+                    <button 
+                      onClick={() => { if(confirm(`确定删除"${cat.name}"分类吗？\n· 其链接将移动到上级分类（无上级则移到"常用推荐"）\n· 子分类将提升到上级分类`)) onDeleteCategory(cat.id); }}
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded"
+                      title="删除"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+              )}
+              {isEditing && (
+                   <button onClick={saveEdit} className="self-start mt-2 text-green-500 hover:bg-green-50 dark:hover:bg-slate-600 p-1.5 rounded bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-600"><Check size={16}/></button>
+              )}
+          </div>
+        </div>
+        {children.map(child => renderCatRow(child, depth + 1))}
+      </div>
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-700 flex flex-col max-h-[85vh]">
         <div className="flex justify-between items-center p-4 border-b border-slate-200 dark:border-slate-700">
-          <h3 className="text-lg font-semibold dark:text-white">分类管理</h3>
+          <div>
+            <h3 className="text-lg font-semibold dark:text-white">分类管理</h3>
+            <p className="text-xs text-slate-400 mt-0.5">支持无限层级：拖拽分类到另一分类上即可嵌套为子分类</p>
+          </div>
           <button onClick={onClose} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors">
             <X className="w-5 h-5 dark:text-slate-400" />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {orderedCats.map((cat) => {
-            const isChild = !!cat.parentId;
-            const idx = siblingIndex(cat);
-            const total = siblingCount(cat);
-            return (
-            <div key={cat.id} className={`flex flex-col p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg group gap-2 border border-slate-100 dark:border-slate-600 ${isChild ? 'ml-8' : ''}`}>
-              <div className="flex items-center gap-2">
-                  <div className="flex flex-col gap-1 mr-2">
-                    <button 
-                      onClick={() => handleMove(cat, 'up')}
-                      disabled={idx === 0}
-                      className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
-                    >
-                      <ArrowUp size={14} />
-                    </button>
-                    <button 
-                      onClick={() => handleMove(cat, 'down')}
-                      disabled={idx === total - 1}
-                      className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
-                    >
-                      <ArrowDown size={14} />
-                    </button>
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    {editingId === cat.id ? (
-                      <div className="flex flex-col gap-2">
-                          <div className="flex gap-2">
-                              <div className="relative w-32 shrink-0">
-                                <select
-                                    value={editIcon}
-                                    onChange={(e) => setEditIcon(e.target.value)}
-                                    className="w-full p-1.5 text-sm rounded border border-blue-500 dark:bg-slate-800 dark:text-white outline-none appearance-none"
-                                >
-                                    {COMMON_ICONS.map(icon => (
-                                        <option key={icon.value} value={icon.value}>
-                                            {icon.label}
-                                        </option>
-                                    ))}
-                                </select>
-                                <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                                    <Icon name={editIcon} size={14} />
-                                </div>
-                              </div>
-                              <input 
-                                type="text" 
-                                value={editName}
-                                onChange={(e) => setEditName(e.target.value)}
-                                className="flex-1 p-1.5 px-2 text-sm rounded border border-blue-500 dark:bg-slate-800 dark:text-white outline-none"
-                                placeholder="分类名称"
-                                autoFocus
-                              />
-                          </div>
-                          <div className="flex items-center gap-2">
-                              <select
-                                value={editParentId}
-                                onChange={(e) => setEditParentId(e.target.value)}
-                                disabled={getChildCategories(categories, cat.id).length > 0}
-                                className="flex-1 p-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white outline-none disabled:opacity-50"
-                              >
-                                <option value="">顶级分类</option>
-                                {parentOptionsForEdit(cat).map(c => (
-                                  <option key={c.id} value={c.id}>{c.name}</option>
-                                ))}
-                              </select>
-                          </div>
-                          <div className="flex items-center gap-2">
-                              <Lock size={14} className="text-slate-400" />
-                              <input 
-                                type="text" 
-                                value={editPassword}
-                                onChange={(e) => setEditPassword(e.target.value)}
-                                className="flex-1 p-1.5 px-2 text-xs rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white outline-none"
-                                placeholder="设置密码 (留空则不加密)"
-                              />
-                          </div>
-                      </div>
-                    ) : mergingCatId === cat.id ? (
-                        <div className="flex items-center gap-2 bg-blue-50 dark:bg-blue-900/20 p-2 rounded">
-                            <span className="text-sm dark:text-slate-200 whitespace-nowrap">合并到 &rarr;</span>
-                            <select 
-                                value={targetMergeId}
-                                onChange={(e) => setTargetMergeId(e.target.value)}
-                                className="flex-1 text-sm p-1 rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
-                            >
-                                {categories.filter(c => c.id !== cat.id).map(c => (
-                                    <option key={c.id} value={c.id}>{c.parentId ? `└ ${c.name}` : c.name}</option>
-                                ))}
-                            </select>
-                            <button onClick={executeMerge} className="text-xs bg-blue-600 text-white px-2 py-1 rounded">确认</button>
-                            <button onClick={() => setMergingCatId(null)} className="text-xs text-slate-500 px-2 py-1">取消</button>
-                        </div>
-                    ) : (
-                      <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded bg-white dark:bg-slate-800 flex items-center justify-center text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-600">
-                             {cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon) 
-                                ? <span className="text-lg">{cat.icon}</span> 
-                                : <Icon name={cat.icon} size={16} />
-                             }
-                          </div>
-                          <div className="flex flex-col">
-                            <div className="flex items-center gap-2">
-                                <span className="font-medium dark:text-slate-200 truncate">{cat.name}</span>
-                                {isChild && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500">子目录</span>}
-                                {cat.password && <Lock size={12} className="text-amber-500" />}
-                            </div>
-                            <span className="text-xs text-slate-400">{links.filter(l => l.categoryId === cat.id).length} 个链接</span>
-                          </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {editingId !== cat.id && mergingCatId !== cat.id && (
-                      <div className="flex items-center gap-1 self-start mt-2">
-                        <button onClick={() => startEdit(cat)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded" title="编辑">
-                            <Edit2 size={14} />
-                        </button>
-                        <button onClick={() => openMerge(cat.id)} className="p-1.5 text-slate-400 hover:text-purple-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded" title="合并到其他分类">
-                            <Merge size={14} />
-                        </button>
-                        <button 
-                        onClick={() => { if(confirm(`确定删除"${cat.name}"分类吗？该分类下的书签将移动到"常用推荐"，子目录将提升为顶级分类。`)) onDeleteCategory(cat.id); }}
-                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded"
-                        title="删除"
-                        >
-                        <Trash2 size={14} />
-                        </button>
-                      </div>
-                  )}
-                  {editingId === cat.id && (
-                       <button onClick={saveEdit} className="self-start mt-2 text-green-500 hover:bg-green-50 dark:hover:bg-slate-600 p-1.5 rounded bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-600"><Check size={16}/></button>
-                  )}
-              </div>
+        <div 
+          className="flex-1 overflow-y-auto p-4 space-y-2"
+          onDragOver={handleCatDragOverRoot}
+          onDrop={handleCatDropRoot}
+        >
+          {dragCatId && (
+            <div className={`text-center py-2 text-xs rounded-lg border border-dashed transition-colors ${
+              dragOverRoot 
+                ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/20 text-blue-500' 
+                : 'border-slate-200 dark:border-slate-600 text-slate-400'
+            }`}>
+              拖到此处设为顶级分类
             </div>
-          );})}
+          )}
+          {rootCats.map(cat => renderCatRow(cat, 0))}
         </div>
 
         <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-           <label className="text-xs font-semibold text-slate-500 uppercase mb-2 block">添加新分类 / 子目录</label>
+           <label className="text-xs font-semibold text-slate-500 uppercase mb-2 block">
+             添加新分类{newCatParentId ? `（将添加为「${getCategoryPath(categories, categories.find(c => c.id === newCatParentId)!)}」的子分类）` : ''}
+           </label>
            <div className="flex flex-col gap-2">
              <div className="flex gap-2">
                  <div className="relative w-32 shrink-0">
@@ -341,11 +438,11 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                  <select
                     value={newCatParentId}
                     onChange={(e) => setNewCatParentId(e.target.value)}
-                    className="w-40 shrink-0 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white text-sm outline-none"
+                    className="w-48 shrink-0 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white text-sm outline-none"
                  >
                     <option value="">顶级分类</option>
-                    {rootCats.map(c => (
-                      <option key={c.id} value={c.id}>子目录 · {c.name}</option>
+                    {categories.map(c => (
+                      <option key={c.id} value={c.id}>{getCategoryPath(categories, c)}</option>
                     ))}
                  </select>
                  <div className="flex-1 relative">

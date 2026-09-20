@@ -356,13 +356,22 @@ function buildMenus() {
             contexts: ["page", "link", "action"]
         });
 
-        // 动态生成分类子菜单（支持一级目录 + 子目录）
+        // 动态生成分类子菜单（任意层级：Chrome 菜单仅支持两级，深层分类用相对路径标题拍平展示）
         if (categoryCache.length > 0) {
             const roots = categoryCache.filter(c => !c.parentId);
             const childrenOf = (id) => categoryCache.filter(c => c.parentId === id);
+            const collectDescendants = (id, prefix) => {
+                const result = [];
+                childrenOf(id).forEach(child => {
+                    const title = prefix ? \`\${prefix} / \${child.name}\` : child.name;
+                    result.push({ id: child.id, title });
+                    result.push(...collectDescendants(child.id, title));
+                });
+                return result;
+            };
             roots.forEach(cat => {
-                const kids = childrenOf(cat.id);
-                if (kids.length === 0) {
+                const descendants = collectDescendants(cat.id, '');
+                if (descendants.length === 0) {
                     chrome.contextMenus.create({
                         id: \`save_to_\${cat.id}\`,
                         parentId: "cloudnav_root",
@@ -383,11 +392,11 @@ function buildMenus() {
                     title: "此分类",
                     contexts: ["page", "link", "action"]
                 });
-                kids.forEach(child => {
+                descendants.forEach(d => {
                     chrome.contextMenus.create({
-                        id: \`save_to_\${child.id}\`,
+                        id: \`save_to_\${d.id}\`,
                         parentId: \`cat_group_\${cat.id}\`,
-                        title: child.name,
+                        title: d.title,
                         contexts: ["page", "link", "action"]
                     });
                 });
