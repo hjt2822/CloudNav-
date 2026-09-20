@@ -11,6 +11,8 @@ export const getFaviconCandidates = (targetUrl: string): string[] => {
     const u = new URL(normalized);
     const encoded = encodeURIComponent(u.origin);
     return [
+      // 本站服务端代理（Cloudflare Functions），部署后国内直连可用；dev 预览无 functions 时 404 自动顺延
+      `/api/favicon?url=${encodeURIComponent(normalized)}`,
       `https://t2.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${encoded}&size=128`,
       `https://api.iowen.cn/favicon/${u.hostname}.png`,
       `https://favicon.im/${u.hostname}?larger=true`,
@@ -22,7 +24,7 @@ export const getFaviconCandidates = (targetUrl: string): string[] => {
 };
 
 // Preload probe: returns the URL of the first successfully loaded candidate, returns null if all fail
-export const probeFavicon = (targetUrl: string, timeoutMs = 6000): Promise<string | null> => {
+export const probeFavicon = (targetUrl: string, timeoutMs = 5000): Promise<string | null> => {
   const candidates = getFaviconCandidates(targetUrl);
   if (candidates.length === 0) return Promise.resolve(null);
 
