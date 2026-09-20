@@ -141,33 +141,56 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleBulkGenerate = async () => {
-    if (!localConfig.apiKey) {
-        alert("请先配置并保存 API Key");
-        return;
-    }
-
     const missingLinks = links.filter(l => !l.description);
     if (missingLinks.length === 0) {
         alert("所有链接都已有描述！");
         return;
     }
 
-    if (!confirm(`发现 ${missingLinks.length} 个链接缺少描述，确定要使用 AI 自动生成吗？这可能需要一些时间。`)) return;
+    const useAI = !!localConfig.apiKey;
+    if (!confirm(`发现 ${missingLinks.length} 个链接缺少描述。\n将优先免费抓取网页信息${useAI ? "，抓取失败的用 AI 生成" : "（可在 AI 设置中配置 Key 提升覆盖率）"}，继续吗？`)) return;
 
     setIsProcessing(true);
     shouldStopRef.current = false;
     setProgress({ current: 0, total: missingLinks.length });
     
     let currentLinks = [...links];
+    let filled = 0;
 
     for (let i = 0; i < missingLinks.length; i++) {
         if (shouldStopRef.current) break;
 
         const link = missingLinks[i];
         try {
-            const desc = await generateLinkDescription(link.title, link.url, localConfig);
-            currentLinks = currentLinks.map(l => l.id === link.id ? { ...l, description: desc } : l);
-            onUpdateLinks(currentLinks);
+            let desc = '';
+            let fetchedTitle = '';
+
+            // 第一优先：免费网页抓取（Cloudflare Pages Functions /api/meta）
+            try {
+                const resp = await fetch(`/api/meta?url=${encodeURIComponent(link.url)}`);
+                if (resp.ok) {
+                    const data = await resp.json();
+                    desc = data?.description || '';
+                    fetchedTitle = data?.title || '';
+                }
+            } catch { /* dev 预览无 functions 或站点不可达 */ }
+
+            // 第二优先：AI 生成兜底（已配置 Key 时）
+            if (!desc && useAI) {
+                try {
+                    desc = (await generateLinkDescription(link.title, link.url, localConfig)) || '';
+                } catch { /* AI 失败跳过 */ }
+            }
+
+            if (desc || (fetchedTitle && !link.title)) {
+                currentLinks = currentLinks.map(l => l.id === link.id ? { 
+                    ...l, 
+                    description: desc || l.description,
+                    title: (!l.title && fetchedTitle) ? fetchedTitle : l.title
+                } : l);
+                onUpdateLinks(currentLinks);
+                filled++;
+            }
             setProgress({ current: i + 1, total: missingLinks.length });
         } catch (e) {
             console.error(`Failed to generate for ${link.title}`, e);
@@ -175,6 +198,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
 
     setIsProcessing(false);
+    if (!shouldStopRef.current) {
+        alert(filled > 0 
+            ? `已补全 ${filled}/${missingLinks.length} 个链接的描述`
+            : "未能补全：请确认已部署到 Cloudflare Pages（/api/meta 接口），或在 AI 设置中配置 API Key");
+    }
   };
 
   const handleCopy = (text: string, key: string) => {
@@ -1070,7 +1098,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             {isProcessing ? (
                                 <div className="space-y-2">
                                     <div className="flex justify-between text-xs text-slate-600 dark:text-slate-400">
-                                        <span>正在生成描述... ({progress.current}/{progress.total})</span>
+                                        <span>正在补全描述... ({progress.current}/{progress.total})</span>
                                         <button onClick={() => { shouldStopRef.current = true; setIsProcessing(false); }} className="text-red-500 flex items-center gap-1 hover:underline">
                                             <PauseCircle size={12}/> 停止
                                         </button>
