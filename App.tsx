@@ -4,11 +4,13 @@ import {
   Search, Plus, Upload, Moon, Sun, Menu, 
   Trash2, Edit2, Loader2, Cloud, CheckCircle2, AlertCircle,
   Pin, Settings, Lock, CloudCog, Github, GitFork, MoreVertical,
-  QrCode, Copy, LayoutGrid, List, Check, ExternalLink, ArrowRight
+  QrCode, Copy, LayoutGrid, List, Check, ExternalLink, ArrowRight,
+  ChevronRight, ChevronDown
 } from 'lucide-react';
 import { 
     LinkItem, Category, DEFAULT_CATEGORIES, INITIAL_LINKS, 
-    WebDavConfig, AIConfig, SiteSettings, SearchEngine, DEFAULT_SEARCH_ENGINES 
+    WebDavConfig, AIConfig, SiteSettings, SearchEngine, DEFAULT_SEARCH_ENGINES,
+    getRootCategories, getChildCategories, flattenCategoryTree
 } from './types';
 import Icon from './components/Icon';
 import LinkModal from './components/LinkModal';
@@ -69,6 +71,7 @@ function App() {
   const [qrCodeLink, setQrCodeLink] = useState<LinkItem | null>(null);
 
   const [unlockedCategoryIds, setUnlockedCategoryIds] = useState<Set<string>>(new Set());
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<Set<string>>(new Set());
 
   const [webDavConfig, setWebDavConfig] = useState<WebDavConfig>({
       url: '',
@@ -284,7 +287,7 @@ function App() {
         }
 
         let currentCatId = 'all';
-        for (const cat of categories) {
+        for (const cat of flattenCategoryTree(categories)) {
             const el = document.getElementById(`cat-${cat.id}`);
             if (el && el.offsetTop <= scrollPosition && (el.offsetTop + el.offsetHeight) > scrollPosition) {
                 currentCatId = cat.id;
@@ -339,9 +342,11 @@ function App() {
   const handleImportConfirm = (newLinks: LinkItem[], newCategories: Category[]) => {
       const mergedCategories = [...categories];
       newCategories.forEach(nc => {
-          if (!mergedCategories.some(c => c.id === nc.id || c.name === nc.name)) {
-              mergedCategories.push(nc);
-          }
+          const exists = mergedCategories.some(c =>
+              c.id === nc.id ||
+              (c.name === nc.name && (c.parentId || '') === (nc.parentId || ''))
+          );
+          if (!exists) mergedCategories.push(nc);
       });
       const mergedLinks = [...links, ...newLinks];
       updateData(mergedLinks, mergedCategories);
@@ -406,6 +411,12 @@ function App() {
           setTimeout(() => isAutoScrollingRef.current = false, 800);
           return;
       }
+      const cat = categories.find(c => c.id === catId);
+      if (cat?.parentId) {
+          setExpandedCategoryIds(prev => new Set(prev).add(cat.parentId!));
+      } else {
+          setExpandedCategoryIds(prev => new Set(prev).add(catId));
+      }
       const el = document.getElementById(`cat-${catId}`);
       if (el) {
           isAutoScrollingRef.current = true;
@@ -413,6 +424,16 @@ function App() {
           mainRef.current?.scrollTo({ top, behavior: 'smooth' });
           setTimeout(() => isAutoScrollingRef.current = false, 800);
       }
+  };
+
+  const toggleExpandCategory = (catId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setExpandedCategoryIds(prev => {
+          const next = new Set(prev);
+          if (next.has(catId)) next.delete(catId);
+          else next.add(catId);
+          return next;
+      });
   };
 
   const handleUnlockCategory = (catId: string) => {
@@ -426,9 +447,13 @@ function App() {
 
   const handleDeleteCategory = (catId: string) => {
       if (!authToken) { setIsAuthOpen(true); return; }
-      const newCats = categories.filter(c => c.id !== catId);
-      const targetId = 'common'; 
-      const newLinks = links.map(l => l.categoryId === catId ? { ...l, categoryId: targetId } : l);
+      const cat = categories.find(c => c.id === catId);
+      const newCats = categories
+        .filter(c => c.id !== catId)
+        .map(c => c.parentId === catId ? { ...c, parentId: undefined } : c);
+      const targetId = cat?.parentId || 'common';
+      const fallbackId = newCats.some(c => c.id === targetId) ? targetId : (newCats[0]?.id || 'common');
+      const newLinks = links.map(l => l.categoryId === catId ? { ...l, categoryId: fallbackId } : l);
       if (newCats.length === 0) newCats.push(DEFAULT_CATEGORIES[0]);
       updateData(newLinks, newCats);
   };
@@ -704,26 +729,67 @@ function App() {
                </button>
             </div>
 
-            {categories.map(cat => {
+            {getRootCategories(categories).map(cat => {
+                const children = getChildCategories(categories, cat.id);
+                const hasChildren = children.length > 0;
+                const isExpanded = expandedCategoryIds.has(cat.id) || children.some(c => c.id === activeCategory);
                 const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
                 const isEmoji = cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon);
+                const isActive = activeCategory === cat.id;
                 
                 return (
-                  <button
-                    key={cat.id}
-                    onClick={() => scrollToCategory(cat.id)}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all group ${
-                      activeCategory === cat.id 
-                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium' 
-                        : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-                    }`}
-                  >
-                    <div className={`p-1.5 rounded-lg transition-colors flex items-center justify-center ${activeCategory === cat.id ? 'bg-blue-100 dark:bg-blue-800' : 'bg-slate-100 dark:bg-slate-800'}`}>
-                      {isLocked ? <Lock size={16} className="text-amber-500" /> : (isEmoji ? <span className="text-base leading-none">{cat.icon}</span> : <Icon name={cat.icon} size={16} />)}
-                    </div>
-                    <span className="truncate flex-1 text-left">{cat.name}</span>
-                    {activeCategory === cat.id && <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
-                  </button>
+                  <div key={cat.id} className="space-y-0.5">
+                    <button
+                      onClick={() => scrollToCategory(cat.id)}
+                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-xl transition-all group ${
+                        isActive 
+                          ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium' 
+                          : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      {hasChildren ? (
+                        <span
+                          onClick={(e) => toggleExpandCategory(cat.id, e)}
+                          className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-400"
+                        >
+                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        </span>
+                      ) : (
+                        <span className="w-[18px]" />
+                      )}
+                      <div className={`p-1.5 rounded-lg transition-colors flex items-center justify-center ${isActive ? 'bg-blue-100 dark:bg-blue-800' : 'bg-slate-100 dark:bg-slate-800'}`}>
+                        {isLocked ? <Lock size={16} className="text-amber-500" /> : (isEmoji ? <span className="text-base leading-none">{cat.icon}</span> : <Icon name={cat.icon} size={16} />)}
+                      </div>
+                      <span className="truncate flex-1 text-left text-sm">{cat.name}</span>
+                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
+                    </button>
+                    {hasChildren && isExpanded && (
+                      <div className="ml-5 pl-2 border-l border-slate-200 dark:border-slate-700 space-y-0.5">
+                        {children.map(child => {
+                          const childLocked = child.password && !unlockedCategoryIds.has(child.id);
+                          const childEmoji = child.icon && child.icon.length <= 4 && !/^[a-zA-Z]+$/.test(child.icon);
+                          const childActive = activeCategory === child.id;
+                          return (
+                            <button
+                              key={child.id}
+                              onClick={() => scrollToCategory(child.id)}
+                              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+                                childActive
+                                  ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 font-medium'
+                                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                              }`}
+                            >
+                              <div className={`p-1 rounded-md flex items-center justify-center ${childActive ? 'bg-blue-100 dark:bg-blue-800' : ''}`}>
+                                {childLocked ? <Lock size={14} className="text-amber-500" /> : (childEmoji ? <span className="text-sm leading-none">{child.icon}</span> : <Icon name={child.icon} size={14} />)}
+                              </div>
+                              <span className="truncate flex-1 text-left text-sm">{child.name}</span>
+                              {childActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 );
             })}
         </div>
@@ -907,57 +973,81 @@ function App() {
                 </section>
             )}
 
-            {categories.map(cat => {
-                let catLinks = searchResults.filter(l => l.categoryId === cat.id);
+            {getRootCategories(categories).map(cat => {
+                const children = getChildCategories(categories, cat.id);
+                const catLinks = searchResults.filter(l => l.categoryId === cat.id);
                 const isLocked = cat.password && !unlockedCategoryIds.has(cat.id);
+                const childHasResults = children.some(child => searchResults.some(l => l.categoryId === child.id));
                 
-                // Logic Fix: If External Search, do NOT hide categories based on links
-                // Because external search doesn't filter links.
-                // However, the user probably wants to see the links grid even when typing for external search
-                // Current logic: if search query exists AND local search -> filter. 
-                // If search query exists AND external search -> show all (searchResults returns all).
-                
-                if (searchQuery && searchMode === 'local' && catLinks.length === 0) return null;
+                if (searchQuery && searchMode === 'local' && catLinks.length === 0 && !childHasResults) return null;
+
+                const renderLocked = (lockedCat: Category) => (
+                    <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 p-8 flex flex-col items-center justify-center text-center">
+                        <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4 text-amber-600 dark:text-amber-400">
+                            <Lock size={24} />
+                        </div>
+                        <h3 className="text-slate-800 dark:text-slate-200 font-medium mb-1">私密目录</h3>
+                        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">该分类已加密，需要验证密码才能查看内容</p>
+                        <button 
+                            onClick={() => setCatAuthModalData(lockedCat)}
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors"
+                        >
+                            输入密码解锁
+                        </button>
+                    </div>
+                );
+
+                const renderGrid = (sectionLinks: LinkItem[]) => (
+                    sectionLinks.length === 0 ? (
+                        children.length === 0 ? (
+                            <div className="text-center py-8 text-slate-400 text-sm italic">暂无链接</div>
+                        ) : null
+                    ) : (
+                        <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
+                            {sectionLinks.map(link => renderLinkCard(link))}
+                        </div>
+                    )
+                );
 
                 return (
-                    <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-24">
-                        <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-100 dark:border-slate-800">
-                             <div className="text-slate-400">
-                                {cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon) ? <span className="text-lg">{cat.icon}</span> : <Icon name={cat.icon} size={20} />}
-                             </div>
-                             <h2 className="text-lg font-bold text-slate-800 dark:text-slate-200">
-                                 {cat.name}
-                             </h2>
-                             {isLocked && <Lock size={16} className="text-amber-500" />}
+                    <section key={cat.id} id={`cat-${cat.id}`} className="scroll-mt-24 space-y-6">
+                        <div>
+                            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-100 dark:border-slate-800">
+                                 <div className="text-slate-400">
+                                    {cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon) ? <span className="text-lg">{cat.icon}</span> : <Icon name={cat.icon} size={20} />}
+                                 </div>
+                                 <h2 className="text-lg font-bold text-slate-800 dark:text-slate-200">
+                                     {cat.name}
+                                 </h2>
+                                 {isLocked && <Lock size={16} className="text-amber-500" />}
+                            </div>
+                            
+                            {isLocked ? renderLocked(cat) : renderGrid(catLinks)}
                         </div>
-                        
-                        {isLocked ? (
-                             <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700 p-8 flex flex-col items-center justify-center text-center">
-                                <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/30 rounded-full flex items-center justify-center mb-4 text-amber-600 dark:text-amber-400">
-                                    <Lock size={24} />
+
+                        {!isLocked && children.map(child => {
+                            const childLinks = searchResults.filter(l => l.categoryId === child.id);
+                            const childLocked = child.password && !unlockedCategoryIds.has(child.id);
+                            if (!childLocked && childLinks.length === 0) return null;
+                            return (
+                                <div key={child.id} id={`cat-${child.id}`} className="scroll-mt-24 pl-2">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <div className="text-slate-400">
+                                            {child.icon && child.icon.length <= 4 && !/^[a-zA-Z]+$/.test(child.icon) ? <span className="text-base">{child.icon}</span> : <Icon name={child.icon} size={16} />}
+                                        </div>
+                                        <h3 className="text-base font-semibold text-slate-700 dark:text-slate-300">
+                                            {child.name}
+                                        </h3>
+                                        {childLocked && <Lock size={14} className="text-amber-500" />}
+                                    </div>
+                                    {childLocked ? renderLocked(child) : (
+                                        <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
+                                            {childLinks.map(link => renderLinkCard(link))}
+                                        </div>
+                                    )}
                                 </div>
-                                <h3 className="text-slate-800 dark:text-slate-200 font-medium mb-1">私密目录</h3>
-                                <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">该分类已加密，需要验证密码才能查看内容</p>
-                                <button 
-                                    onClick={() => setCatAuthModalData(cat)}
-                                    className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors"
-                                >
-                                    输入密码解锁
-                                </button>
-                             </div>
-                        ) : (
-                             <>
-                                {catLinks.length === 0 ? (
-                                    <div className="text-center py-8 text-slate-400 text-sm italic">
-                                        暂无链接
-                                    </div>
-                                ) : (
-                                    <div className={`grid gap-3 ${siteSettings.cardStyle === 'simple' ? 'grid-cols-2 md:grid-cols-5 lg:grid-cols-8 xl:grid-cols-10' : 'grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'}`}>
-                                        {catLinks.map(link => renderLinkCard(link))}
-                                    </div>
-                                )}
-                             </>
-                        )}
+                            );
+                        })}
                     </section>
                 );
             })}
