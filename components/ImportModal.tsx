@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, FileText, ArrowRight, Check, AlertCircle, FolderInput, ListTree } from 'lucide-react';
-import { Category, LinkItem } from '../types';
+import { Category, LinkItem, flattenCategoryTree, getCategoryLabel } from '../types';
 import { parseBookmarks } from '../services/bookmarkParser';
 
 interface ImportModalProps {
@@ -80,12 +80,22 @@ const ImportModal: React.FC<ImportModalProps> = ({
             }
         });
 
-        // 3. Category Diff
-        const existingCategoryNames = new Set(categories.map(c => c.name));
-        const uniqueNewCategories = result.categories.filter(c => !existingCategoryNames.has(c.name));
+        const existingRootNames = new Set(categories.filter(c => !c.parentId).map(c => c.name));
+        const existingChildKeys = new Set(
+            categories.filter(c => c.parentId).map(c => {
+                const parent = categories.find(p => p.id === c.parentId);
+                return parent ? `${parent.name}::${c.name}` : c.name;
+            })
+        );
+        const uniqueNewCategories = result.categories.filter(c => {
+            if (!c.parentId) return !existingRootNames.has(c.name);
+            const parent = result.categories.find(p => p.id === c.parentId);
+            const key = parent ? `${parent.name}::${c.name}` : c.name;
+            return !existingChildKeys.has(key);
+        });
 
         setParsedLinks(uniqueNewLinks);
-        setParsedCategories(uniqueNewCategories);
+        setParsedCategories(result.categories);
         setNewLinksCount(uniqueNewLinks.length);
         setDuplicateCount(duplicates);
         setNewCategoriesCount(uniqueNewCategories.length);
@@ -117,33 +127,49 @@ const ImportModal: React.FC<ImportModalProps> = ({
           // Since parseBookmarks generates IDs for categories, if a category name already exists in `categories`, 
           // we should remap the links to the existing category ID instead of creating a new duplicate-named category.
           
-          const nameToIdMap = new Map<string, string>();
-          categories.forEach(c => nameToIdMap.set(c.name, c.id));
-
-          // Valid new categories to add
-          const categoriesToAdd: Category[] = [];
-
-          parsedCategories.forEach(pc => {
-              if (nameToIdMap.has(pc.name)) {
-                  // Category exists, we don't add it.
-                  // But we need to know its ID to remap links.
-              } else {
-                  categoriesToAdd.push(pc);
-                  nameToIdMap.set(pc.name, pc.id); // Add new one to map
+          const rootNameToId = new Map<string, string>();
+          const childKeyToId = new Map<string, string>();
+          categories.forEach(c => {
+              if (!c.parentId) rootNameToId.set(c.name, c.id);
+          });
+          categories.forEach(c => {
+              if (c.parentId) {
+                  const parent = categories.find(p => p.id === c.parentId);
+                  if (parent) childKeyToId.set(`${parent.name}::${c.name}`, c.id);
               }
           });
 
-          // Remap links
+          const categoriesToAdd: Category[] = [];
+
+          parsedCategories.filter(pc => !pc.parentId).forEach(pc => {
+              if (!rootNameToId.has(pc.name)) {
+                  categoriesToAdd.push(pc);
+                  rootNameToId.set(pc.name, pc.id);
+              }
+          });
+
+          parsedCategories.filter(pc => !!pc.parentId).forEach(pc => {
+              const parentParsed = parsedCategories.find(p => p.id === pc.parentId);
+              const parentName = parentParsed?.name;
+              const existingParentId = parentName ? rootNameToId.get(parentName) : undefined;
+              const childKey = parentName ? `${parentName}::${pc.name}` : pc.name;
+              if (!childKeyToId.has(childKey)) {
+                  const remapped = { ...pc, parentId: existingParentId };
+                  categoriesToAdd.push(remapped);
+                  childKeyToId.set(childKey, remapped.id);
+              }
+          });
+
           finalLinks = finalLinks.map(link => {
-             // Find the name of the category this link was assigned to in the parser
-             const originalCat = parsedCategories.find(c => c.id === link.categoryId) 
-                                 || categories.find(c => c.id === link.categoryId); // Fallback
-             
-             if (originalCat && nameToIdMap.has(originalCat.name)) {
-                 return { ...link, categoryId: nameToIdMap.get(originalCat.name)! };
+             const originalCat = parsedCategories.find(c => c.id === link.categoryId)
+                                 || categories.find(c => c.id === link.categoryId);
+             if (!originalCat) return { ...link, categoryId: 'common' };
+             if (!originalCat.parentId) {
+                 return { ...link, categoryId: rootNameToId.get(originalCat.name) || 'common' };
              }
-             // If for some reason we can't find the map, put it in common
-             return { ...link, categoryId: 'common' };
+             const parentParsed = parsedCategories.find(p => p.id === originalCat.parentId);
+             const key = parentParsed ? `${parentParsed.name}::${originalCat.name}` : originalCat.name;
+             return { ...link, categoryId: childKeyToId.get(key) || rootNameToId.get(originalCat.name) || 'common' };
           });
 
           finalCategories = categoriesToAdd;
@@ -251,8 +277,8 @@ const ImportModal: React.FC<ImportModalProps> = ({
                                             onClick={(e) => e.stopPropagation()}
                                             className="w-full text-sm p-2 rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white outline-none"
                                         >
-                                            {categories.map(c => (
-                                                <option key={c.id} value={c.id}>{c.name}</option>
+                                            {flattenCategoryTree(categories).map(c => (
+                                                <option key={c.id} value={c.id}>{getCategoryLabel(categories, c)}</option>
                                             ))}
                                         </select>
                                     </div>

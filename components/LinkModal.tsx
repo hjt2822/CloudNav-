@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Sparkles, Loader2, Pin, AlertTriangle, Wand2, Image as ImageIcon } from 'lucide-react';
-import { LinkItem, Category, AIConfig } from '../types';
+import { LinkItem, Category, AIConfig, flattenCategoryTree, getCategoryLabel } from '../types';
 import { generateLinkDescription, suggestCategory } from '../services/geminiService';
 
 interface LinkModalProps {
@@ -264,8 +264,8 @@ const LinkModal: React.FC<LinkModalProps> = ({ isOpen, onClose, onSave, categori
                     onChange={(e) => setCategoryId(e.target.value)}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                     >
-                    {categories.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.name}</option>
+                    {flattenCategoryTree(categories).map(cat => (
+                        <option key={cat.id} value={cat.id}>{getCategoryLabel(categories, cat)}</option>
                     ))}
                     </select>
                 </div>

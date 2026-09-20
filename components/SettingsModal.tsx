@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { X, Save, Bot, Key, Globe, Sparkles, PauseCircle, Wrench, Box, Copy, Check, List, GripVertical, Filter, LayoutTemplate, RefreshCw, Info, Download, Sidebar, Keyboard, MousePointerClick, AlertTriangle, Package, Zap, Menu } from 'lucide-react';
-import { AIConfig, LinkItem, Category, SiteSettings } from '../types';
+import { AIConfig, LinkItem, Category, SiteSettings, flattenCategoryTree, getCategoryLabel } from '../types';
 import { generateLinkDescription } from '../services/geminiService';
 import JSZip from 'jszip';
 
@@ -356,9 +356,43 @@ function buildMenus() {
             contexts: ["page", "link", "action"]
         });
 
-        // 动态生成分类子菜单
+        // 动态生成分类子菜单（支持一级目录 + 子目录）
         if (categoryCache.length > 0) {
-            categoryCache.forEach(cat => {
+            const roots = categoryCache.filter(c => !c.parentId);
+            const childrenOf = (id) => categoryCache.filter(c => c.parentId === id);
+            roots.forEach(cat => {
+                const kids = childrenOf(cat.id);
+                if (kids.length === 0) {
+                    chrome.contextMenus.create({
+                        id: \`save_to_\${cat.id}\`,
+                        parentId: "cloudnav_root",
+                        title: cat.name,
+                        contexts: ["page", "link", "action"]
+                    });
+                    return;
+                }
+                chrome.contextMenus.create({
+                    id: \`cat_group_\${cat.id}\`,
+                    parentId: "cloudnav_root",
+                    title: cat.name,
+                    contexts: ["page", "link", "action"]
+                });
+                chrome.contextMenus.create({
+                    id: \`save_to_\${cat.id}\`,
+                    parentId: \`cat_group_\${cat.id}\`,
+                    title: "此分类",
+                    contexts: ["page", "link", "action"]
+                });
+                kids.forEach(child => {
+                    chrome.contextMenus.create({
+                        id: \`save_to_\${child.id}\`,
+                        parentId: \`cat_group_\${cat.id}\`,
+                        title: child.name,
+                        contexts: ["page", "link", "action"]
+                    });
+                });
+            });
+            categoryCache.filter(c => c.parentId && !roots.some(r => r.id === c.parentId)).forEach(cat => {
                 chrome.contextMenus.create({
                     id: \`save_to_\${cat.id}\`,
                     parentId: "cloudnav_root",
@@ -642,34 +676,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const isSearching = q.length > 0;
 
-        allCategories.forEach(cat => {
-            const catLinks = allLinks.filter(l => {
-                const inCat = l.categoryId === cat.id;
-                if (!inCat) return false;
-                if (!q) return true;
-                return l.title.toLowerCase().includes(q) || 
-                       l.url.toLowerCase().includes(q) || 
-                       (l.description && l.description.toLowerCase().includes(q));
-            });
-
-            if (catLinks.length === 0) return;
+        const roots = allCategories.filter(c => !c.parentId);
+        const orphans = allCategories.filter(c => c.parentId && !allCategories.some(p => p.id === c.parentId));
+        const matchLinks = (catId) => allLinks.filter(l => {
+            if (l.categoryId !== catId) return false;
+            if (!q) return true;
+            return l.title.toLowerCase().includes(q) ||
+                   l.url.toLowerCase().includes(q) ||
+                   (l.description && l.description.toLowerCase().includes(q));
+        });
+        const renderCat = (cat, nested) => {
+            const catLinks = matchLinks(cat.id);
+            const kids = allCategories.filter(c => c.parentId === cat.id);
+            const kidHtmlParts = kids.map(k => renderCat(k, true)).filter(Boolean);
+            if (catLinks.length === 0 && kidHtmlParts.length === 0) return '';
             hasContent = true;
-
             const isOpen = expandedCats.has(cat.id) || isSearching;
             const activeClass = isOpen ? 'active' : '';
-
-            html += \`
-            <div class="cat-group">
+            let block = \`
+            <div class="cat-group" style="\${nested ? 'padding-left:12px;' : ''}">
                 <div class="cat-header \${activeClass}" data-id="\${cat.id}">
                     \${getArrowIcon()}
                     <span>\${cat.name}</span>
                 </div>
                 <div class="cat-links">
             \`;
-            
             catLinks.forEach(link => {
                 const iconSrc = getFaviconUrl(link.url);
-                html += \`
+                block += \`
                     <a href="\${link.url}" target="_blank" class="link-item">
                         <div class="link-icon"><img src="\${iconSrc}" /></div>
                         <div class="link-info">
@@ -678,8 +712,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     </a>
                 \`;
             });
-
-            html += \`</div></div>\`;
+            block += kidHtmlParts.join('') + \`</div></div>\`;
+            return block;
+        };
+        [...roots, ...orphans].forEach(cat => {
+            html += renderCat(cat, false);
         });
 
         if (!hasContent) {
@@ -1056,8 +1093,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 className="p-1.5 text-sm rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                             >
                                 <option value="all">全部分类</option>
-                                {categories.map(c => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                {flattenCategoryTree(categories).map(c => (
+                                    <option key={c.id} value={c.id}>{getCategoryLabel(categories, c)}</option>
                                 ))}
                             </select>
                             <span className="text-xs text-slate-400 ml-auto">拖拽调整顺序</span>
@@ -1087,7 +1124,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                                             <div className="text-xs text-slate-400 truncate">{link.url}</div>
                                         </div>
                                         <div className="text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-600 text-slate-500">
-                                            {categories.find(c => c.id === link.categoryId)?.name}
+                                            {(() => {
+                                                const cat = categories.find(c => c.id === link.categoryId);
+                                                return cat ? getCategoryLabel(categories, cat) : '';
+                                            })()}
                                         </div>
                                     </div>
                                  ))

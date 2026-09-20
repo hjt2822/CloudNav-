@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
-import { X, ArrowUp, ArrowDown, Trash2, Edit2, Plus, Check, Lock, Merge, Smile } from 'lucide-react';
-import { Category, LinkItem } from '../types';
+import { X, ArrowUp, ArrowDown, Trash2, Edit2, Plus, Check, Lock, Merge } from 'lucide-react';
+import { Category, LinkItem, flattenCategoryTree, getChildCategories, getRootCategories } from '../types';
 import Icon from './Icon';
 
 interface CategoryManagerModalProps {
@@ -13,7 +13,6 @@ interface CategoryManagerModalProps {
   onDeleteCategory: (id: string) => void;
 }
 
-// 预定义常用图标列表
 const COMMON_ICONS = [
   { value: 'Folder', label: '文件夹' },
   { value: 'Star', label: '收藏/星标' },
@@ -35,6 +34,13 @@ const COMMON_ICONS = [
   { value: 'Briefcase', label: '办公/工作' },
   { value: 'Cloud', label: '云服务' },
   { value: 'Shield', label: '安全' },
+  { value: 'Newspaper', label: '资讯/媒体' },
+  { value: 'Wrench', label: '工具' },
+  { value: 'TrendingUp', label: '投资/趋势' },
+  { value: 'Megaphone', label: '自媒体' },
+  { value: 'Package', label: '组件/SDK' },
+  { value: 'Layout', label: '界面/布局' },
+  { value: 'Sparkles', label: 'AI/创意' },
 ];
 
 const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({ 
@@ -49,24 +55,38 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState('');
   const [editPassword, setEditPassword] = useState('');
+  const [editParentId, setEditParentId] = useState('');
   
   const [newCatName, setNewCatName] = useState('');
   const [newCatIcon, setNewCatIcon] = useState('Folder');
   const [newCatPassword, setNewCatPassword] = useState('');
+  const [newCatParentId, setNewCatParentId] = useState('');
 
-  // Merge State
   const [mergingCatId, setMergingCatId] = useState<string | null>(null);
   const [targetMergeId, setTargetMergeId] = useState<string>('');
 
   if (!isOpen) return null;
 
-  const handleMove = (index: number, direction: 'up' | 'down') => {
+  const orderedCats = flattenCategoryTree(categories);
+  const rootCats = getRootCategories(categories);
+
+  const siblingIndex = (cat: Category) => {
+    const siblings = categories.filter(c => (c.parentId || '') === (cat.parentId || ''));
+    return siblings.findIndex(c => c.id === cat.id);
+  };
+
+  const siblingCount = (cat: Category) =>
+    categories.filter(c => (c.parentId || '') === (cat.parentId || '')).length;
+
+  const handleMove = (cat: Category, direction: 'up' | 'down') => {
+    const siblings = categories.filter(c => (c.parentId || '') === (cat.parentId || ''));
+    const index = siblings.findIndex(c => c.id === cat.id);
+    const swapWith = direction === 'up' ? siblings[index - 1] : siblings[index + 1];
+    if (!swapWith) return;
+    const i1 = categories.findIndex(c => c.id === cat.id);
+    const i2 = categories.findIndex(c => c.id === swapWith.id);
     const newCats = [...categories];
-    if (direction === 'up' && index > 0) {
-      [newCats[index], newCats[index - 1]] = [newCats[index - 1], newCats[index]];
-    } else if (direction === 'down' && index < newCats.length - 1) {
-      [newCats[index], newCats[index + 1]] = [newCats[index + 1], newCats[index]];
-    }
+    [newCats[i1], newCats[i2]] = [newCats[i2], newCats[i1]];
     onUpdateCategories(newCats);
   };
 
@@ -75,16 +95,22 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
     setEditName(cat.name);
     setEditIcon(cat.icon || 'Folder');
     setEditPassword(cat.password || '');
+    setEditParentId(cat.parentId || '');
     setMergingCatId(null);
   };
 
   const saveEdit = () => {
     if (!editingId || !editName.trim()) return;
+    const current = categories.find(c => c.id === editingId);
+    if (!current) return;
+    const hasChildren = getChildCategories(categories, editingId).length > 0;
+    const nextParentId = hasChildren ? undefined : (editParentId || undefined);
     const newCats = categories.map(c => c.id === editingId ? { 
         ...c, 
         name: editName.trim(),
         icon: editIcon.trim(),
-        password: editPassword.trim() || undefined
+        password: editPassword.trim() || undefined,
+        parentId: nextParentId
     } : c);
     onUpdateCategories(newCats);
     setEditingId(null);
@@ -96,17 +122,18 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
       id: Date.now().toString(),
       name: newCatName.trim(),
       icon: newCatIcon.trim() || 'Folder',
-      password: newCatPassword.trim() || undefined
+      password: newCatPassword.trim() || undefined,
+      parentId: newCatParentId || undefined
     };
     onUpdateCategories([...categories, newCat]);
     setNewCatName('');
     setNewCatIcon('Folder');
     setNewCatPassword('');
+    setNewCatParentId('');
   };
 
   const openMerge = (catId: string) => {
       setMergingCatId(catId);
-      // Default target is first category that is not self
       const firstTarget = categories.find(c => c.id !== catId);
       if (firstTarget) setTargetMergeId(firstTarget.id);
   };
@@ -114,18 +141,24 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
   const executeMerge = () => {
       if (!mergingCatId || !targetMergeId) return;
       if (mergingCatId === targetMergeId) return;
-
       if (!confirm('确定合并吗？合并后原分类将被删除。')) return;
 
-      // 1. Move all links
+      const target = categories.find(c => c.id === targetMergeId);
       const newLinks = links.map(l => l.categoryId === mergingCatId ? { ...l, categoryId: targetMergeId } : l);
-
-      // 2. Remove old category
-      const newCats = categories.filter(c => c.id !== mergingCatId);
+      const newCats = categories
+        .filter(c => c.id !== mergingCatId)
+        .map(c => {
+          if (c.parentId !== mergingCatId) return c;
+          const nextParent = target && !target.parentId ? target.id : undefined;
+          return { ...c, parentId: nextParent };
+        });
 
       onUpdateCategories(newCats, newLinks);
       setMergingCatId(null);
   };
+
+  const parentOptionsForEdit = (cat: Category) =>
+    rootCats.filter(c => c.id !== cat.id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -138,28 +171,30 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          {categories.map((cat, index) => (
-            <div key={cat.id} className="flex flex-col p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg group gap-2 border border-slate-100 dark:border-slate-600">
+          {orderedCats.map((cat) => {
+            const isChild = !!cat.parentId;
+            const idx = siblingIndex(cat);
+            const total = siblingCount(cat);
+            return (
+            <div key={cat.id} className={`flex flex-col p-3 bg-slate-50 dark:bg-slate-700/50 rounded-lg group gap-2 border border-slate-100 dark:border-slate-600 ${isChild ? 'ml-8' : ''}`}>
               <div className="flex items-center gap-2">
-                  {/* Order Controls */}
                   <div className="flex flex-col gap-1 mr-2">
                     <button 
-                      onClick={() => handleMove(index, 'up')}
-                      disabled={index === 0}
+                      onClick={() => handleMove(cat, 'up')}
+                      disabled={idx === 0}
                       className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
                     >
                       <ArrowUp size={14} />
                     </button>
                     <button 
-                      onClick={() => handleMove(index, 'down')}
-                      disabled={index === categories.length - 1}
+                      onClick={() => handleMove(cat, 'down')}
+                      disabled={idx === total - 1}
                       className="p-0.5 text-slate-400 hover:text-blue-500 disabled:opacity-30"
                     >
                       <ArrowDown size={14} />
                     </button>
                   </div>
 
-                  {/* Name & Content */}
                   <div className="flex-1 min-w-0">
                     {editingId === cat.id ? (
                       <div className="flex flex-col gap-2">
@@ -190,6 +225,19 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                               />
                           </div>
                           <div className="flex items-center gap-2">
+                              <select
+                                value={editParentId}
+                                onChange={(e) => setEditParentId(e.target.value)}
+                                disabled={getChildCategories(categories, cat.id).length > 0}
+                                className="flex-1 p-1.5 text-xs rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white outline-none disabled:opacity-50"
+                              >
+                                <option value="">顶级分类</option>
+                                {parentOptionsForEdit(cat).map(c => (
+                                  <option key={c.id} value={c.id}>{c.name}</option>
+                                ))}
+                              </select>
+                          </div>
+                          <div className="flex items-center gap-2">
                               <Lock size={14} className="text-slate-400" />
                               <input 
                                 type="text" 
@@ -209,7 +257,7 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                                 className="flex-1 text-sm p-1 rounded border border-slate-300 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
                             >
                                 {categories.filter(c => c.id !== cat.id).map(c => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                    <option key={c.id} value={c.id}>{c.parentId ? `└ ${c.name}` : c.name}</option>
                                 ))}
                             </select>
                             <button onClick={executeMerge} className="text-xs bg-blue-600 text-white px-2 py-1 rounded">确认</button>
@@ -226,6 +274,7 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                           <div className="flex flex-col">
                             <div className="flex items-center gap-2">
                                 <span className="font-medium dark:text-slate-200 truncate">{cat.name}</span>
+                                {isChild && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500">子目录</span>}
                                 {cat.password && <Lock size={12} className="text-amber-500" />}
                             </div>
                             <span className="text-xs text-slate-400">{links.filter(l => l.categoryId === cat.id).length} 个链接</span>
@@ -234,7 +283,6 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                     )}
                   </div>
 
-                  {/* Actions */}
                   {editingId !== cat.id && mergingCatId !== cat.id && (
                       <div className="flex items-center gap-1 self-start mt-2">
                         <button onClick={() => startEdit(cat)} className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded" title="编辑">
@@ -244,7 +292,7 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                             <Merge size={14} />
                         </button>
                         <button 
-                        onClick={() => { if(confirm(`确定删除"${cat.name}"分类吗？该分类下的书签将移动到"常用推荐"。`)) onDeleteCategory(cat.id); }}
+                        onClick={() => { if(confirm(`确定删除"${cat.name}"分类吗？该分类下的书签将移动到"常用推荐"，子目录将提升为顶级分类。`)) onDeleteCategory(cat.id); }}
                         className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-slate-200 dark:hover:bg-slate-600 rounded"
                         title="删除"
                         >
@@ -257,11 +305,11 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                   )}
               </div>
             </div>
-          ))}
+          );})}
         </div>
 
         <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-           <label className="text-xs font-semibold text-slate-500 uppercase mb-2 block">添加新分类</label>
+           <label className="text-xs font-semibold text-slate-500 uppercase mb-2 block">添加新分类 / 子目录</label>
            <div className="flex flex-col gap-2">
              <div className="flex gap-2">
                  <div className="relative w-32 shrink-0">
@@ -290,6 +338,16 @@ const CategoryManagerModal: React.FC<CategoryManagerModalProps> = ({
                  />
              </div>
              <div className="flex gap-2">
+                 <select
+                    value={newCatParentId}
+                    onChange={(e) => setNewCatParentId(e.target.value)}
+                    className="w-40 shrink-0 p-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white text-sm outline-none"
+                 >
+                    <option value="">顶级分类</option>
+                    {rootCats.map(c => (
+                      <option key={c.id} value={c.id}>子目录 · {c.name}</option>
+                    ))}
+                 </select>
                  <div className="flex-1 relative">
                     <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input 
