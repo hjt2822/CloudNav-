@@ -97,7 +97,13 @@ export const onRequestGet = async (context: { request: Request; env: any }) => {
       metaContent(head, 'og:description') ||
       '';
 
-    // 无 meta 描述时，取正文可见文本兜底
+    // 中文站点常用 keywords 兜底
+    if (!description) {
+      const kw = metaContent(head, 'keywords');
+      if (kw) description = kw.slice(0, 160);
+    }
+
+    // 仍无描述时，取正文可见文本兜底
     if (!description) {
       const bodyStart = html.search(/<body[^>]*>/i);
       const body = html.slice(bodyStart > -1 ? bodyStart : 150000, (bodyStart > -1 ? bodyStart : 150000) + 150000);
