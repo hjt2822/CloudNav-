@@ -14,6 +14,7 @@ import {
 } from './types';
 import Favicon from './components/Favicon';
 import { getHostname } from './services/favicon';
+import { displayIconOf } from './services/categoryIcon';
 import Icon from './components/Icon';
 import LinkModal from './components/LinkModal';
 import AuthModal from './components/AuthModal';
@@ -754,7 +755,7 @@ function App() {
               <span className="w-[18px] shrink-0" />
             )}
             <div className={`${depth === 0 ? 'p-1.5' : 'p-1'} rounded-lg transition-colors flex items-center justify-center shrink-0 ${isActive ? 'bg-blue-100 dark:bg-blue-800' : 'bg-slate-100 dark:bg-slate-800'}`}>
-              {isLocked ? <Lock size={depth === 0 ? 16 : 14} className="text-amber-500" /> : (isEmoji ? <span className={depth === 0 ? 'text-base leading-none' : 'text-sm leading-none'}>{cat.icon}</span> : <Icon name={cat.icon} size={depth === 0 ? 16 : 14} />)}
+              {isLocked ? <Lock size={depth === 0 ? 16 : 14} className="text-amber-500" /> : (isEmoji ? <span className={depth === 0 ? 'text-base leading-none' : 'text-sm leading-none'}>{cat.icon}</span> : <Icon name={displayIconOf(cat.name, cat.icon)} size={depth === 0 ? 16 : 14} />)}
             </div>
             <span className="truncate flex-1 text-left text-sm">{cat.name}</span>
             {isActive && <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></div>}
@@ -811,6 +812,7 @@ function App() {
       if (!searching && depth > 0 && catLinks.length === 0 && children.length === 0 && !isLocked) return null;
 
       const isEmoji = cat.icon && cat.icon.length <= 4 && !/^[a-zA-Z]+$/.test(cat.icon);
+      const resolvedIcon = isEmoji ? cat.icon : displayIconOf(cat.name, cat.icon);
       const isDropTargetCat = dropTargetCatId === cat.id;
       const showEmptyHint = catLinks.length === 0 && children.length === 0 && !isLocked;
 
@@ -824,18 +826,27 @@ function App() {
           >
               <div className={isDropTargetCat ? 'rounded-xl ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-900' : ''}>
                   <div 
-                    className={`flex items-center gap-2 ${depth === 0 ? 'mb-4 pb-2 border-b border-slate-100 dark:border-slate-800' : 'mb-3'}`}
+                    className={`flex items-center gap-2.5 ${depth === 0 ? 'mb-4 pb-3 border-b border-slate-100 dark:border-slate-800' : 'mb-3'}`}
                   >
-                      <div className="text-slate-400 cursor-pointer" onClick={() => setIsCatManagerOpen(true)}>
-                          {isEmoji ? <span className={depth === 0 ? 'text-lg' : 'text-base'}>{cat.icon}</span> : <Icon name={cat.icon} size={depth === 0 ? 20 : 16} />}
+                      <div 
+                        onClick={() => setIsCatManagerOpen(true)}
+                        title="点击编辑分类"
+                        className={`shrink-0 flex items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800/80 text-slate-500 dark:text-slate-400 cursor-pointer hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/30 dark:hover:text-blue-400 transition-colors ${depth === 0 ? 'w-8 h-8' : 'w-7 h-7'}`}
+                      >
+                          {isEmoji ? <span className={depth === 0 ? 'text-lg leading-none' : 'text-base leading-none'}>{resolvedIcon}</span> : <Icon name={resolvedIcon} size={depth === 0 ? 17 : 15} />}
                       </div>
                       <h2 
                         onClick={() => setIsCatManagerOpen(true)}
-                        className={`${depth === 0 ? 'text-base font-medium tracking-tight text-slate-800 dark:text-slate-200' : 'text-sm font-medium tracking-tight text-slate-700 dark:text-slate-300'} cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors`}
+                        className={`${depth === 0 ? 'text-base font-semibold tracking-tight text-slate-800 dark:text-slate-200' : 'text-sm font-medium tracking-tight text-slate-700 dark:text-slate-300'} cursor-pointer hover:text-blue-600 dark:hover:text-blue-400 transition-colors`}
                         title="点击编辑分类"
                       >
                           {cat.name}
                       </h2>
+                      {!isLocked && (
+                          <span className={`ml-auto shrink-0 rounded-full bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500 tabular-nums ${depth === 0 ? 'text-xs px-2 py-0.5' : 'text-[11px] px-1.5 py-0.5'}`}>
+                              {totalMatches}
+                          </span>
+                      )}
                       {isLocked && <Lock size={16} className="text-amber-500" />}
                   </div>
                   
